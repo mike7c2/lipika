@@ -1,0 +1,48 @@
+# exp/009-equivalent scene as a TOML config.
+# 4 UK nodes receiving an ISS UHF beacon at 437 MHz, 250 s pass.
+
+[scene]
+epoch_unix = 1717260840.0  # 2024-06-01 16:54:00 UTC
+duration_s = 250.0
+
+[[source]]
+name = "iss_uhf_beacon"
+carrier_hz = 437_000_000.0
+kind = "bpsk"
+bit_rate_bps = 9600.0
+payload_bits = 2399968       # 9600 bps × 250 s − 32 sync bits
+payload_seed = 2026_05_31
+sync_word = [-1, 1, 1, -1, 1, -1, -1, 1, 1, 1, 1, -1, -1, 1, -1, 1, -1, 1, -1, -1, 1, 1, -1, -1, 1, -1, 1, 1, -1, -1, -1, 1]
+trajectory = { kind = "tle", line1 = "1 25544U 98067A   24001.50000000  .00010000  00000+0  18000-3 0  9994", line2 = "2 25544  51.6400 100.0000 0001000  90.0000 270.0000 15.50000000000009" }
+
+[[observer]]
+name = "glasgow"
+lo_carrier_hz = 437_000_000.0
+sample_rate_hz = 48_000.0
+snr_db_per_source = 10.0
+trajectory = { kind = "stationary_geodetic", lat_deg = 55.86, lon_deg = -4.25, h_m = 10.0 }
+clock = { allan_deviation_1s = 1e-11, frequency_offset_y0 = 0.0, initial_time_offset_s = 0.0 }
+
+[[observer]]
+name = "london"
+lo_carrier_hz = 437_000_000.0
+sample_rate_hz = 48_000.0
+snr_db_per_source = 10.0
+trajectory = { kind = "stationary_geodetic", lat_deg = 51.51, lon_deg = -0.13, h_m = 10.0 }
+clock = { allan_deviation_1s = 1e-11 }
+
+[[observer]]
+name = "belfast"
+lo_carrier_hz = 437_000_000.0
+sample_rate_hz = 48_000.0
+snr_db_per_source = 10.0
+trajectory = { kind = "stationary_geodetic", lat_deg = 54.60, lon_deg = -5.93, h_m = 10.0 }
+clock = { allan_deviation_1s = 1e-11 }
+
+[[observer]]
+name = "plymouth"
+lo_carrier_hz = 437_000_000.0
+sample_rate_hz = 48_000.0
+snr_db_per_source = 10.0
+trajectory = { kind = "stationary_geodetic", lat_deg = 50.37, lon_deg = -4.14, h_m = 10.0 }
+clock = { allan_deviation_1s = 1e-11 }

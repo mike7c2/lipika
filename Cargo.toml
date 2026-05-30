@@ -1,0 +1,71 @@
+[package]
+name = "dgsn-iq-gen"
+version = "0.1.0"
+edition = "2024"
+description = "Multi-source, multi-observer IQ scene simulator for DGSN and adjacent SDR work."
+license = "MIT"
+readme = "README.md"
+
+[[bin]]
+name = "dgsn-iq-gen"
+path = "src/bin/dgsn_iq_gen.rs"
+
+[lib]
+name = "dgsn_iq_gen"
+path = "src/lib.rs"
+
+[dependencies]
+# Numerical
+ndarray = { version = "0.16", features = ["rayon"] }
+num-complex = "0.4"
+num-traits = "0.2"
+
+# Parallelism
+rayon = "1.10"
+
+# RNG
+rand = "0.8"
+rand_distr = "0.4"
+rand_xoshiro = "0.6"
+
+# Orbital propagation
+sgp4 = "2.3"
+
+# CLI and config
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+serde_json = "1.0"
+
+# Errors and logging
+thiserror = "2.0"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+
+# IQ I/O
+npyz = "0.8"
+chrono = "0.4"
+
+# Cross-platform GPU compute via wgpu (Vulkan / Metal / DX12 / WebGPU).
+# All optional behind the `gpu` feature so CPU-only builds stay quick.
+wgpu = { version = "22.1", optional = true }
+bytemuck = { version = "1.18", features = ["derive"], optional = true }
+pollster = { version = "0.3", optional = true }
+
+[features]
+default = []
+gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]
+
+[dev-dependencies]
+approx = "0.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "iq_generation"
+harness = false
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+debug = true
