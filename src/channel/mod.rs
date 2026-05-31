@@ -37,31 +37,48 @@ pub fn solve_emission_times(
     assert_eq!(observer_position_utc.dim(), (3, n),
                "observer_position_utc must be (3, n) matching t_utc length");
 
-    let mut t_emit = t_utc - 0.07;
+    // Per-sample Newton loop: no (3, N) intermediate allocations, all the
+    // hot data stays in registers / L1 cache. Trajectory queries go via
+    // `position_ecef` (returns `[f64; 3]`, no heap), which for the
+    // PrecomputedTrajectory decorator is just two array reads + a lerp.
+    let mut t_emit = Array1::<f64>::zeros(n);
     let mut ranges = Array1::<f64>::zeros(n);
-
-    for _ in 0..iterations {
-        let src_pos = source_traj.position_ecef_batch(&t_emit);
-        for i in 0..n {
-            let dx = src_pos[[0, i]] - observer_position_utc[[0, i]];
-            let dy = src_pos[[1, i]] - observer_position_utc[[1, i]];
-            let dz = src_pos[[2, i]] - observer_position_utc[[2, i]];
-            let r = (dx * dx + dy * dy + dz * dz).sqrt();
-            ranges[i] = r;
-            t_emit[i] = t_utc[i] - r / SPEED_OF_LIGHT_M_S;
+    let inv_c = 1.0 / SPEED_OF_LIGHT_M_S;
+    let t_utc_s = t_utc.as_slice().expect("contiguous t_utc");
+    let t_emit_s = t_emit.as_slice_mut().expect("contiguous t_emit");
+    let ranges_s = ranges.as_slice_mut().expect("contiguous ranges");
+    for i in 0..n {
+        let tu = t_utc_s[i];
+        let ox = observer_position_utc[[0, i]];
+        let oy = observer_position_utc[[1, i]];
+        let oz = observer_position_utc[[2, i]];
+        let mut t = tu - 0.07;
+        let mut r = 0.0;
+        for _ in 0..iterations {
+            let [sx, sy, sz] = source_traj.position_ecef(t);
+            let dx = sx - ox;
+            let dy = sy - oy;
+            let dz = sz - oz;
+            r = (dx * dx + dy * dy + dz * dz).sqrt();
+            t = tu - r * inv_c;
         }
+        t_emit_s[i] = t;
+        ranges_s[i] = r;
     }
     (t_emit, ranges)
 }
 
-/// Per-transmitter contribution at one receiver band.
+/// Per-transmitter contribution at one receiver band, **accumulated**
+/// directly into a caller-supplied buffer. Avoids allocating an
+/// intermediate per-source contribution array and the second loop pass
+/// that summing into a band accumulator would otherwise need.
 ///
-/// `t_local` and `t_utc` are the receiver's nominal sample times in
-/// receiver-local and UTC frames respectively. `receiver_lo_carrier_hz`
-/// is the receiver-band LO (used to mix to baseband). `tx_power_w`
-/// is the transmitter's effective isotropic radiated power in watts
-/// (used for free-space-path-loss amplitude scaling).
-pub fn transmitter_contribution_at_receiver(
+/// `t_local` / `t_utc` are the receiver's nominal sample times in
+/// receiver-local / UTC frames. `receiver_lo_carrier_hz` is the receiver-
+/// band LO. `tx_power_w` is the transmitter's EIRP in watts (FSPL).
+/// `accumulator` is `n`-long and is added to in place.
+pub fn accumulate_transmitter_contribution(
+    accumulator: &mut Array1<Complex32>,
     signal: &dyn SignalModel,
     transmitter_traj: &dyn Trajectory,
     receiver_position_utc: &Array2<f64>,
@@ -71,7 +88,7 @@ pub fn transmitter_contribution_at_receiver(
     receiver_lo_carrier_hz: f64,
     tx_power_w: f64,
     newton_iters: usize,
-) -> Array1<Complex32> {
+) {
     let n = t_utc.len();
     let (t_emit, ranges) = profile::time("tx_contribution:newton",
         || solve_emission_times(transmitter_traj, receiver_position_utc, t_utc, newton_iters));
@@ -81,6 +98,8 @@ pub fn transmitter_contribution_at_receiver(
     let wavelength_m = SPEED_OF_LIGHT_M_S / src_carrier;
     let tx_amplitude_v = tx_power_w.sqrt();
 
+    debug_assert_eq!(accumulator.len(), n,
+        "accumulator length must match per-sample arrays");
     profile::time("tx_contribution:mix", move || {
 
     // Phase at the observer's antenna mixer at sample n:
@@ -98,37 +117,63 @@ pub fn transmitter_contribution_at_receiver(
     //   φ_obs(n) = baseband_phase(t_emit) - 2π · f_src · delay - 2π · f_src · Δt_o(t_local)
     //
     // We allow f_lo_obs ≠ f_src to keep the IF-tuning case open.
-    let mut out = Array1::<Complex32>::zeros(n);
     let tau = std::f64::consts::TAU;
-    // (mix-loop body starts here; closed in profile::time above)
-    // Hoist every loop invariant out of the per-sample inner loop. The
-    // hot path is ~10 ns/sample on a tuned x86; saving a few flops per
-    // sample compounds across 10⁸ samples in a realistic GNSS scene.
+    // Hoist loop invariants. rustc would do most of these but spelling
+    // them out keeps intent obvious for the next reader.
     let neg_tau_src = -tau * src_carrier;
     let tau_if = tau * (src_carrier - receiver_lo_carrier_hz);
-    // λ / (4π) · √P_tx — constant factor of the FSPL amplitude term;
-    // per-sample we only need to divide by range.
+    // λ/(4π) · √P_tx — constant factor of the FSPL amplitude term;
+    // per-sample we only divide by range.
     let amp_factor = (wavelength_m / (2.0 * tau)) * tx_amplitude_v;
     let inv_c = 1.0 / SPEED_OF_LIGHT_M_S;
+    let acc = accumulator.as_slice_mut().expect("contiguous accumulator");
+    let bb = baseband.as_slice().expect("contiguous baseband");
+    let ranges_s = ranges.as_slice().expect("contiguous ranges");
+    let delta_t_s = delta_t_receiver.as_slice().expect("contiguous delta_t");
+    let t_local_s = t_local.as_slice().expect("contiguous t_local");
     for i in 0..n {
-        let r = ranges[i];
+        let r = ranges_s[i];
         let delay = r * inv_c;
-        // Phase of the received carrier at sample i, after baseband mix.
-        let phase = neg_tau_src * (delay + delta_t_receiver[i])
-                  + tau_if * t_local[i];
+        let phase = neg_tau_src * (delay + delta_t_s[i])
+                  + tau_if * t_local_s[i];
         let (sp, cp) = phase.sin_cos();
-        // FSPL: |E| ∝ √P_tx · λ / (4π·r). Isotropic Rx antenna assumed.
-        let amplitude = amp_factor / r;
-        let amp_f32 = amplitude as f32;
-        let mix = Complex32::new(amp_f32 * cp as f32, amp_f32 * sp as f32);
-        out[i] = baseband[i] * mix;
+        let amplitude = (amp_factor / r) as f32;
+        // Complex multiply baseband × (cos + j sin), scale by amplitude,
+        // accumulate into the band buffer in one fused expression.
+        let b = bb[i];
+        acc[i] = Complex32::new(
+            acc[i].re + amplitude * (b.re * (cp as f32) - b.im * (sp as f32)),
+            acc[i].im + amplitude * (b.re * (sp as f32) + b.im * (cp as f32)),
+        );
     }
-    out
-    })  // end of "tx_contribution:mix" profile scope; closure returns `out`
+    })  // end of "tx_contribution:mix" profile scope
 }
 
-/// Keep the legacy name as a thin shim during the refactor.
-#[deprecated(note = "renamed to transmitter_contribution_at_receiver; use that instead")]
+/// Allocating wrapper: produces a fresh `n`-long contribution buffer.
+/// Used by tests / benches; the pipeline uses
+/// [`accumulate_transmitter_contribution`] directly to avoid the
+/// allocation + second-pass.
+pub fn transmitter_contribution_at_receiver(
+    signal: &dyn SignalModel,
+    transmitter_traj: &dyn Trajectory,
+    receiver_position_utc: &Array2<f64>,
+    t_local: &Array1<f64>,
+    t_utc: &Array1<f64>,
+    delta_t_receiver: &Array1<f64>,
+    receiver_lo_carrier_hz: f64,
+    tx_power_w: f64,
+    newton_iters: usize,
+) -> Array1<Complex32> {
+    let mut out = Array1::<Complex32>::zeros(t_utc.len());
+    accumulate_transmitter_contribution(
+        &mut out, signal, transmitter_traj, receiver_position_utc, t_local, t_utc,
+        delta_t_receiver, receiver_lo_carrier_hz, tx_power_w, newton_iters,
+    );
+    out
+}
+
+/// Old shim, gone post-refactor — old name kept deprecated for one more cycle.
+#[deprecated(note = "renamed to transmitter_contribution_at_receiver")]
 pub fn source_contribution_at_observer(
     source: &dyn SignalModel,
     source_traj: &dyn Trajectory,
@@ -142,8 +187,7 @@ pub fn source_contribution_at_observer(
     transmitter_contribution_at_receiver(
         source, source_traj, observer_position_utc, t_local, t_utc,
         delta_t_observer, observer_lo_carrier_hz,
-        1.0, // 1 W default for backward-compat
-        newton_iters,
+        1.0, newton_iters,
     )
 }
 

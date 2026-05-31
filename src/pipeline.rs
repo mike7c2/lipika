@@ -21,7 +21,9 @@ use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 use rayon::prelude::*;
 
-use crate::channel::{add_awgn_at_power, thermal_noise_power_w, transmitter_contribution_at_receiver};
+use crate::channel::{
+    accumulate_transmitter_contribution, add_awgn_at_power, thermal_noise_power_w,
+};
 use crate::profile;
 use crate::clock::{NodeClock, NodeClockSpec};
 use crate::config::{
@@ -208,15 +210,13 @@ fn generate_one_band(
 
     let mut accumulator = Array1::<Complex32>::zeros(n);
     for tx in transmitters {
-        let contribution = profile::time("tx_contribution:total", || {
-            transmitter_contribution_at_receiver(
+        profile::time("tx_contribution:total", || {
+            accumulate_transmitter_contribution(
+                &mut accumulator,
                 &*tx.signal, &*tx.trajectory,
                 &receiver_position, &t_local, &t_utc, &delta_t,
                 band.lo_carrier_hz, tx.tx_power_w, NEWTON_ITERATIONS,
-            )
-        });
-        profile::time("accumulator:add", || {
-            accumulator = &accumulator + &contribution;
+            );
         });
     }
 
