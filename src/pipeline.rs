@@ -32,7 +32,7 @@ use crate::config::{
 };
 use crate::geometry::{
     kepler::CircularKeplerian, precomputed::PrecomputedTrajectory, stationary::Stationary,
-    tle::TleTrajectory, Trajectory,
+    tle::TleTrajectory, AnyTrajectory, Trajectory,
 };
 use crate::output::ObserverOutput;
 use crate::signal::{bpsk::BpskFrame, ca_code::CaCodeSource, cw::ContinuousWave, SignalModel};
@@ -92,32 +92,39 @@ struct Transmitter {
     #[allow(dead_code)] // for logging / future use
     name: String,
     signal: Arc<dyn SignalModel>,
-    trajectory: Arc<dyn Trajectory>,
+    /// Wrapped into an `AnyTrajectory` enum-dispatch instead of
+    /// `Arc<dyn Trajectory>` so the per-sample Newton-loop call to
+    /// `position_ecef` can be inlined.
+    trajectory: AnyTrajectory,
     tx_power_w: f64,
 }
 
 impl Transmitter {
     fn from_config(cfg: &TransmitterConfig, scene: &SceneConfig) -> Result<Self> {
-        // Wrap the raw trajectory in a precomputed-and-interpolated decorator
-        // so the per-output-sample Newton iterations only pay an array
-        // lookup + interpolation per query, not a fresh SGP4 / Kepler eval.
+        // Build raw trajectory, then wrap into the right AnyTrajectory
+        // variant. Non-stationary ones go through PrecomputedTrajectory
+        // so Newton-loop queries are just two array reads + a lerp.
         let raw = build_trajectory(&cfg.trajectory)?;
-        let precomputed: Arc<dyn Trajectory> = match &*cfg.trajectory.kind_name() {
-            // Stationary: precompute is overhead for no gain; pass through.
-            "stationary_geodetic" | "stationary_ecef" => raw,
+        let trajectory = match cfg.trajectory.kind_name() {
+            "stationary_geodetic" | "stationary_ecef" => {
+                // The Stationary impl is sub-µs to clone, no point
+                // wrapping in PrecomputedTrajectory.
+                let pos = raw.position_ecef(scene.scene.epoch_unix);
+                AnyTrajectory::Stationary(Stationary { position_ecef: pos })
+            }
             _ => profile::time("trajectory:precompute", || {
-                Arc::new(PrecomputedTrajectory::sample(
+                AnyTrajectory::Precomputed(PrecomputedTrajectory::sample(
                     &*raw,
                     scene.scene.epoch_unix,
                     scene.scene.duration_s,
                     TX_TRAJECTORY_GRID_DT_S,
-                )) as Arc<dyn Trajectory>
+                ))
             }),
         };
         Ok(Self {
             name: cfg.name.clone(),
             signal: build_signal(cfg)?,
-            trajectory: precomputed,
+            trajectory,
             tx_power_w: 10f64.powf(cfg.tx_power_dbw / 10.0),
         })
     }
@@ -213,7 +220,7 @@ fn generate_one_band(
         profile::time("tx_contribution:total", || {
             accumulate_transmitter_contribution(
                 &mut accumulator,
-                &*tx.signal, &*tx.trajectory,
+                &*tx.signal, &tx.trajectory,
                 &receiver_position, &t_local, &t_utc, &delta_t,
                 band.lo_carrier_hz, tx.tx_power_w, NEWTON_ITERATIONS,
             );

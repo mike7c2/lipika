@@ -11,6 +11,48 @@ pub mod precomputed;
 pub mod stationary;
 pub mod tle;
 
+/// Enum-dispatched trajectory for the perf-critical hot path.
+///
+/// The pipeline wraps every transmitter trajectory into one of these
+/// variants (almost always `Precomputed` after the trajectory-precompute
+/// step). The Newton-loop inner call goes through a `match` on this
+/// enum rather than a `&dyn Trajectory` vtable, which the compiler can
+/// inline and (where possible) autovectorise.
+///
+/// New trajectory types extend the `Trajectory` trait freely; the
+/// pipeline downcasts/wraps known concrete types here for speed, and
+/// falls back to a boxed-trait variant for everything else.
+pub enum AnyTrajectory {
+    Stationary(stationary::Stationary),
+    Precomputed(precomputed::PrecomputedTrajectory),
+    /// Catch-all for trajectories the pipeline hasn't been specialised
+    /// for. Each call pays a vtable hop; fine for cold paths and tests.
+    Dyn(std::sync::Arc<dyn Trajectory>),
+}
+
+impl AnyTrajectory {
+    /// One-sample position query. The match is fully visible to the
+    /// compiler so the variant body inlines into callers.
+    #[inline(always)]
+    pub fn position_ecef(&self, t_unix: f64) -> [f64; 3] {
+        match self {
+            AnyTrajectory::Stationary(s) => s.position_ecef(t_unix),
+            AnyTrajectory::Precomputed(p) => p.position_ecef(t_unix),
+            AnyTrajectory::Dyn(a) => a.position_ecef(t_unix),
+        }
+    }
+
+    /// Batched query (kept so existing callers that take whole arrays
+    /// still work).
+    pub fn position_ecef_batch(&self, t_unix: &Array1<f64>) -> Array2<f64> {
+        match self {
+            AnyTrajectory::Stationary(s) => s.position_ecef_batch(t_unix),
+            AnyTrajectory::Precomputed(p) => p.position_ecef_batch(t_unix),
+            AnyTrajectory::Dyn(a) => a.position_ecef_batch(t_unix),
+        }
+    }
+}
+
 /// A trajectory whose ECEF position can be queried at any UTC time.
 ///
 /// Implementations should be cheap to evaluate (precomputed tables OK).

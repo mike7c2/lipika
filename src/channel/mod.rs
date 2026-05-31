@@ -13,7 +13,7 @@ use num_complex::Complex32;
 use rand::Rng;
 use rand_distr::{Distribution, Normal};
 
-use crate::geometry::Trajectory;
+use crate::geometry::{AnyTrajectory, Trajectory};
 use crate::profile;
 use crate::signal::SignalModel;
 use crate::SPEED_OF_LIGHT_M_S;
@@ -27,8 +27,12 @@ pub mod free_space;
 /// Uses fixed-point iteration from an initial guess of `t_utc − 70 ms`
 /// (median LEO/GPS one-way delay). Two iterations bring us to ns precision
 /// across the LEO–GPS altitude range; three for paranoia.
-pub fn solve_emission_times(
-    source_traj: &dyn Trajectory,
+/// Generic monomorphised solver — each concrete `T: Trajectory` gets its
+/// own compiled copy with `T::position_ecef` inlined into the Newton
+/// inner loop. Callers usually go through the [`AnyTrajectory`]-dispatch
+/// helper below, but this one is exposed for hand-tuned codepaths.
+pub fn solve_emission_times_for<T: Trajectory + ?Sized>(
+    source_traj: &T,
     observer_position_utc: &Array2<f64>,
     t_utc: &Array1<f64>,
     iterations: usize,
@@ -68,6 +72,25 @@ pub fn solve_emission_times(
     (t_emit, ranges)
 }
 
+/// Thin AnyTrajectory-dispatching wrapper. Each match arm calls the
+/// monomorphised generic, so the inner Newton loop inlines the concrete
+/// `position_ecef` body for whatever trajectory type is in use.
+pub fn solve_emission_times(
+    source_traj: &AnyTrajectory,
+    observer_position_utc: &Array2<f64>,
+    t_utc: &Array1<f64>,
+    iterations: usize,
+) -> (Array1<f64>, Array1<f64>) {
+    match source_traj {
+        AnyTrajectory::Stationary(s) =>
+            solve_emission_times_for(s, observer_position_utc, t_utc, iterations),
+        AnyTrajectory::Precomputed(p) =>
+            solve_emission_times_for(p, observer_position_utc, t_utc, iterations),
+        AnyTrajectory::Dyn(d) =>
+            solve_emission_times_for(&**d, observer_position_utc, t_utc, iterations),
+    }
+}
+
 /// Per-transmitter contribution at one receiver band, **accumulated**
 /// directly into a caller-supplied buffer. Avoids allocating an
 /// intermediate per-source contribution array and the second loop pass
@@ -80,7 +103,7 @@ pub fn solve_emission_times(
 pub fn accumulate_transmitter_contribution(
     accumulator: &mut Array1<Complex32>,
     signal: &dyn SignalModel,
-    transmitter_traj: &dyn Trajectory,
+    transmitter_traj: &AnyTrajectory,
     receiver_position_utc: &Array2<f64>,
     t_local: &Array1<f64>,
     t_utc: &Array1<f64>,
@@ -155,7 +178,7 @@ pub fn accumulate_transmitter_contribution(
 /// allocation + second-pass.
 pub fn transmitter_contribution_at_receiver(
     signal: &dyn SignalModel,
-    transmitter_traj: &dyn Trajectory,
+    transmitter_traj: &AnyTrajectory,
     receiver_position_utc: &Array2<f64>,
     t_local: &Array1<f64>,
     t_utc: &Array1<f64>,
@@ -170,25 +193,6 @@ pub fn transmitter_contribution_at_receiver(
         delta_t_receiver, receiver_lo_carrier_hz, tx_power_w, newton_iters,
     );
     out
-}
-
-/// Old shim, gone post-refactor — old name kept deprecated for one more cycle.
-#[deprecated(note = "renamed to transmitter_contribution_at_receiver")]
-pub fn source_contribution_at_observer(
-    source: &dyn SignalModel,
-    source_traj: &dyn Trajectory,
-    observer_position_utc: &Array2<f64>,
-    t_local: &Array1<f64>,
-    t_utc: &Array1<f64>,
-    delta_t_observer: &Array1<f64>,
-    observer_lo_carrier_hz: f64,
-    newton_iters: usize,
-) -> Array1<Complex32> {
-    transmitter_contribution_at_receiver(
-        source, source_traj, observer_position_utc, t_local, t_utc,
-        delta_t_observer, observer_lo_carrier_hz,
-        1.0, newton_iters,
-    )
 }
 
 /// Boltzmann's constant in J/K.

@@ -8,7 +8,10 @@ use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 use dgsn_iq_gen::channel::transmitter_contribution_at_receiver;
-use dgsn_iq_gen::geometry::{kepler::CircularKeplerian, stationary::Stationary, Trajectory};
+use dgsn_iq_gen::geometry::{
+    kepler::CircularKeplerian, precomputed::PrecomputedTrajectory,
+    stationary::Stationary, AnyTrajectory, Trajectory,
+};
 use dgsn_iq_gen::signal::ca_code::CaCodeSource;
 
 fn one_sv_pass(c: &mut Criterion) {
@@ -19,13 +22,16 @@ fn one_sv_pass(c: &mut Criterion) {
     let epoch = 1_717_260_840.0;
 
     let observer = Stationary::from_geodetic(55.86, -4.25, 10.0);
-    let sat = CircularKeplerian {
+    let sat_raw = CircularKeplerian {
         semi_major_axis_m: 6_378_137.0 + 20_200_000.0,
         inclination_deg: 55.0,
         raan_deg: 0.0,
         true_anomaly_deg_at_epoch: 0.0,
         epoch_unix: epoch,
     };
+    let sat = AnyTrajectory::Precomputed(
+        PrecomputedTrajectory::sample(&sat_raw, epoch, duration_s, 0.01)
+    );
     let source = CaCodeSource::new(1_575_420_000.0, 1, epoch);
 
     let t_local = Array1::from_iter((0..n).map(|i| epoch + i as f64 / fs));
