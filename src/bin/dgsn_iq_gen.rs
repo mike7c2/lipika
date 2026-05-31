@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use dgsn_iq_gen::{config::SceneConfig, pipeline};
+use dgsn_iq_gen::{config::SceneConfig, pipeline, profile};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -25,6 +25,9 @@ struct Cli {
     /// Backend: cpu (default) or gpu (requires --features gpu at build time).
     #[arg(long, default_value = "cpu")]
     backend: String,
+    /// Print a per-section CPU profile at the end of the run.
+    #[arg(long, default_value_t = false)]
+    profile: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -55,6 +58,11 @@ fn main() -> anyhow::Result<()> {
     for output in &outputs {
         output.write_raw_with_sidecar(&cli.output)?;
         log::info!("  wrote {} ({} samples)", output.name, output.iq.len());
+    }
+
+    if cli.profile {
+        println!();
+        profile::print_report();
     }
     Ok(())
 }

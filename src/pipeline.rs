@@ -22,6 +22,7 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 use rayon::prelude::*;
 
 use crate::channel::{add_awgn_at_power, thermal_noise_power_w, transmitter_contribution_at_receiver};
+use crate::profile;
 use crate::clock::{NodeClock, NodeClockSpec};
 use crate::config::{
     ReceiverBandConfig, ReceiverConfig, SceneConfig, SignalKind, TrajectoryConfig,
@@ -102,12 +103,14 @@ impl Transmitter {
         let precomputed: Arc<dyn Trajectory> = match &*cfg.trajectory.kind_name() {
             // Stationary: precompute is overhead for no gain; pass through.
             "stationary_geodetic" | "stationary_ecef" => raw,
-            _ => Arc::new(PrecomputedTrajectory::sample(
-                &*raw,
-                scene.scene.epoch_unix,
-                scene.scene.duration_s,
-                TX_TRAJECTORY_GRID_DT_S,
-            )),
+            _ => profile::time("trajectory:precompute", || {
+                Arc::new(PrecomputedTrajectory::sample(
+                    &*raw,
+                    scene.scene.epoch_unix,
+                    scene.scene.duration_s,
+                    TX_TRAJECTORY_GRID_DT_S,
+                )) as Arc<dyn Trajectory>
+            }),
         };
         Ok(Self {
             name: cfg.name.clone(),
@@ -194,28 +197,33 @@ fn generate_one_band(
     // are identical between bands; only the white-FM ε(t) realisation
     // differs in its sample grid. For Allan deviations < 1e-9 this gap is
     // numerically negligible.)
-    let clock = NodeClock::new(
+    let clock = profile::time("clock:realise", || NodeClock::new(
         receiver.clock_spec, scene.scene.epoch_unix,
         band.sample_rate_hz, scene.scene.duration_s, rng,
-    );
-    let delta_t = clock.time_offset_at(&t_local);
+    ));
+    let delta_t = profile::time("clock:interpolate", || clock.time_offset_at(&t_local));
     let t_utc = &t_local - &delta_t;
-    let receiver_position = receiver.trajectory.position_ecef_batch(&t_utc);
+    let receiver_position = profile::time("receiver:position_batch",
+        || receiver.trajectory.position_ecef_batch(&t_utc));
 
     let mut accumulator = Array1::<Complex32>::zeros(n);
     for tx in transmitters {
-        let contribution = transmitter_contribution_at_receiver(
-            &*tx.signal, &*tx.trajectory,
-            &receiver_position, &t_local, &t_utc, &delta_t,
-            band.lo_carrier_hz, tx.tx_power_w, NEWTON_ITERATIONS,
-        );
-        accumulator = accumulator + contribution;
+        let contribution = profile::time("tx_contribution:total", || {
+            transmitter_contribution_at_receiver(
+                &*tx.signal, &*tx.trajectory,
+                &receiver_position, &t_local, &t_utc, &delta_t,
+                band.lo_carrier_hz, tx.tx_power_w, NEWTON_ITERATIONS,
+            )
+        });
+        profile::time("accumulator:add", || {
+            accumulator = &accumulator + &contribution;
+        });
     }
 
     let noise_power_w = band.noise_power_w.unwrap_or_else(||
         thermal_noise_power_w(band.noise_temperature_k, band.sample_rate_hz)
     );
-    add_awgn_at_power(&mut accumulator, noise_power_w, rng);
+    profile::time("noise:awgn", || add_awgn_at_power(&mut accumulator, noise_power_w, rng));
 
     let composite_name = format!("{}__{}", receiver.name, band.band_id);
     Ok(ObserverOutput {

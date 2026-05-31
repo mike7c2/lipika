@@ -14,6 +14,7 @@ use rand::Rng;
 use rand_distr::{Distribution, Normal};
 
 use crate::geometry::Trajectory;
+use crate::profile;
 use crate::signal::SignalModel;
 use crate::SPEED_OF_LIGHT_M_S;
 
@@ -72,11 +73,15 @@ pub fn transmitter_contribution_at_receiver(
     newton_iters: usize,
 ) -> Array1<Complex32> {
     let n = t_utc.len();
-    let (t_emit, ranges) = solve_emission_times(transmitter_traj, receiver_position_utc, t_utc, newton_iters);
-    let baseband = signal.evaluate_baseband_batch(&t_emit);
+    let (t_emit, ranges) = profile::time("tx_contribution:newton",
+        || solve_emission_times(transmitter_traj, receiver_position_utc, t_utc, newton_iters));
+    let baseband = profile::time("tx_contribution:baseband",
+        || signal.evaluate_baseband_batch(&t_emit));
     let src_carrier = signal.carrier_hz();
     let wavelength_m = SPEED_OF_LIGHT_M_S / src_carrier;
     let tx_amplitude_v = tx_power_w.sqrt();
+
+    profile::time("tx_contribution:mix", move || {
 
     // Phase at the observer's antenna mixer at sample n:
     //   φ_obs(n) = φ_src_emit(t_emit) - 2π · f_src · (t_local - t_emit)
@@ -95,6 +100,7 @@ pub fn transmitter_contribution_at_receiver(
     // We allow f_lo_obs ≠ f_src to keep the IF-tuning case open.
     let mut out = Array1::<Complex32>::zeros(n);
     let tau = std::f64::consts::TAU;
+    // (mix-loop body starts here; closed in profile::time above)
     // Hoist every loop invariant out of the per-sample inner loop. The
     // hot path is ~10 ns/sample on a tuned x86; saving a few flops per
     // sample compounds across 10⁸ samples in a realistic GNSS scene.
@@ -118,6 +124,7 @@ pub fn transmitter_contribution_at_receiver(
         out[i] = baseband[i] * mix;
     }
     out
+    })  // end of "tx_contribution:mix" profile scope; closure returns `out`
 }
 
 /// Keep the legacy name as a thin shim during the refactor.
