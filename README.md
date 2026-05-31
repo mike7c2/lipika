@@ -114,8 +114,17 @@ cargo run --release --bin dgsn-iq-gen -- \
     --seed 2026
 ```
 
-This writes `<observer>.iq.npy` (complex64) + `<observer>.iq.json`
-(metadata) per observer into `./out/`.
+This writes `<receiver>__<band>.iq.c64` (raw little-endian complex64,
+no header) + `<receiver>__<band>.iq.json` (metadata sidecar) per
+receiver-band into `./out/`. NumPy reads it directly:
+
+```python
+import numpy as np
+iq = np.fromfile("out/glasgow__gnss_l1.iq.c64", dtype=np.complex64)
+```
+
+GNU Radio, gnss-sdr, inspectrum and other SDR tools all read raw
+complex64 natively too.
 
 ## TOML scene structure
 

@@ -134,6 +134,20 @@ pub enum TrajectoryConfig {
     },
 }
 
+impl TrajectoryConfig {
+    /// Stable short identifier of the variant, useful for pipeline
+    /// decisions like "should we precompute this trajectory or pass
+    /// the raw evaluator through?".
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            TrajectoryConfig::StationaryGeodetic { .. } => "stationary_geodetic",
+            TrajectoryConfig::StationaryEcef { .. } => "stationary_ecef",
+            TrajectoryConfig::Tle { .. } => "tle",
+            TrajectoryConfig::CircularKeplerian { .. } => "circular_keplerian",
+        }
+    }
+}
+
 impl SceneConfig {
     pub fn from_toml_file(path: &std::path::Path) -> Result<Self, anyhow::Error> {
         let text = std::fs::read_to_string(path)?;

@@ -43,8 +43,7 @@ anyhow = "1.0"
 log = "0.4"
 env_logger = "0.11"
 
-# IQ I/O
-npyz = "0.8"
+# Datetime helpers (TLE epoch parsing).
 chrono = "0.4"
 
 # GPU backend (wgpu/WGSL) was prototyped and abandoned — see

@@ -28,12 +28,19 @@ use crate::config::{
     TransmitterConfig,
 };
 use crate::geometry::{
-    kepler::CircularKeplerian, stationary::Stationary, tle::TleTrajectory, Trajectory,
+    kepler::CircularKeplerian, precomputed::PrecomputedTrajectory, stationary::Stationary,
+    tle::TleTrajectory, Trajectory,
 };
 use crate::output::ObserverOutput;
 use crate::signal::{bpsk::BpskFrame, ca_code::CaCodeSource, cw::ContinuousWave, SignalModel};
 
 const NEWTON_ITERATIONS: usize = 2;
+
+/// Spacing of the precomputed-trajectory grid for transmitters. 10 ms is
+/// well inside the orbit-arc-vs-chord error budget (sub-µm for LEO/GPS
+/// over 250 s passes) and keeps the per-source ephemeris table small
+/// (250 s × 100 Hz × 3 × 8 bytes ≈ 60 kB per source).
+const TX_TRAJECTORY_GRID_DT_S: f64 = 0.01;
 
 fn build_trajectory(cfg: &TrajectoryConfig) -> Result<Arc<dyn Trajectory>> {
     Ok(match cfg {
@@ -87,11 +94,25 @@ struct Transmitter {
 }
 
 impl Transmitter {
-    fn from_config(cfg: &TransmitterConfig) -> Result<Self> {
+    fn from_config(cfg: &TransmitterConfig, scene: &SceneConfig) -> Result<Self> {
+        // Wrap the raw trajectory in a precomputed-and-interpolated decorator
+        // so the per-output-sample Newton iterations only pay an array
+        // lookup + interpolation per query, not a fresh SGP4 / Kepler eval.
+        let raw = build_trajectory(&cfg.trajectory)?;
+        let precomputed: Arc<dyn Trajectory> = match &*cfg.trajectory.kind_name() {
+            // Stationary: precompute is overhead for no gain; pass through.
+            "stationary_geodetic" | "stationary_ecef" => raw,
+            _ => Arc::new(PrecomputedTrajectory::sample(
+                &*raw,
+                scene.scene.epoch_unix,
+                scene.scene.duration_s,
+                TX_TRAJECTORY_GRID_DT_S,
+            )),
+        };
         Ok(Self {
             name: cfg.name.clone(),
             signal: build_signal(cfg)?,
-            trajectory: build_trajectory(&cfg.trajectory)?,
+            trajectory: precomputed,
             tx_power_w: 10f64.powf(cfg.tx_power_dbw / 10.0),
         })
     }
@@ -124,7 +145,7 @@ pub fn run_scene(scene: &SceneConfig, rng_seed_base: u64) -> Result<Vec<Observer
     let transmitters: Vec<Transmitter> = scene
         .transmitters
         .iter()
-        .map(Transmitter::from_config)
+        .map(|cfg| Transmitter::from_config(cfg, scene))
         .collect::<Result<Vec<_>>>()?;
     let receivers: Vec<Receiver> = scene
         .receivers

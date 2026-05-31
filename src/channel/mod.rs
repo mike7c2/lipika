@@ -95,20 +95,26 @@ pub fn transmitter_contribution_at_receiver(
     // We allow f_lo_obs ≠ f_src to keep the IF-tuning case open.
     let mut out = Array1::<Complex32>::zeros(n);
     let tau = std::f64::consts::TAU;
+    // Hoist every loop invariant out of the per-sample inner loop. The
+    // hot path is ~10 ns/sample on a tuned x86; saving a few flops per
+    // sample compounds across 10⁸ samples in a realistic GNSS scene.
+    let neg_tau_src = -tau * src_carrier;
+    let tau_if = tau * (src_carrier - receiver_lo_carrier_hz);
+    // λ / (4π) · √P_tx — constant factor of the FSPL amplitude term;
+    // per-sample we only need to divide by range.
+    let amp_factor = (wavelength_m / (2.0 * tau)) * tx_amplitude_v;
+    let inv_c = 1.0 / SPEED_OF_LIGHT_M_S;
     for i in 0..n {
         let r = ranges[i];
-        let delay = r / SPEED_OF_LIGHT_M_S;
-        let if_offset = src_carrier - receiver_lo_carrier_hz;
-        // Phase of the received carrier at sample i, after baseband mix:
-        let phase = -tau * src_carrier * (delay + delta_t_receiver[i])
-                  + tau * if_offset * t_local[i];
+        let delay = r * inv_c;
+        // Phase of the received carrier at sample i, after baseband mix.
+        let phase = neg_tau_src * (delay + delta_t_receiver[i])
+                  + tau_if * t_local[i];
         let (sp, cp) = phase.sin_cos();
-        // Free-space path loss: |E| ∝ λ / (4π·r). Combined with transmitter
-        // EIRP √(P_tx) we get receiver-side voltage amplitude.
-        // Isotropic Rx antenna assumed; per-band gain patterns are a future
-        // extension (`channel::antenna_gain` placeholder).
-        let amplitude = (wavelength_m / (2.0 * tau * r)) * tx_amplitude_v;
-        let mix = Complex32::new((amplitude * cp) as f32, (amplitude * sp) as f32);
+        // FSPL: |E| ∝ √P_tx · λ / (4π·r). Isotropic Rx antenna assumed.
+        let amplitude = amp_factor / r;
+        let amp_f32 = amplitude as f32;
+        let mix = Complex32::new(amp_f32 * cp as f32, amp_f32 * sp as f32);
         out[i] = baseband[i] * mix;
     }
     out

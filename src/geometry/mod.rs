@@ -6,8 +6,9 @@
 use ndarray::{Array1, Array2};
 
 pub mod ecef;
-pub mod stationary;
 pub mod kepler;
+pub mod precomputed;
+pub mod stationary;
 pub mod tle;
 
 /// A trajectory whose ECEF position can be queried at any UTC time.

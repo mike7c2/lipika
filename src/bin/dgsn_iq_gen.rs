@@ -53,7 +53,7 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("writing {} observer outputs to {}", outputs.len(), cli.output.display());
     for output in &outputs {
-        output.write_npy_with_sidecar(&cli.output)?;
+        output.write_raw_with_sidecar(&cli.output)?;
         log::info!("  wrote {} ({} samples)", output.name, output.iq.len());
     }
     Ok(())
