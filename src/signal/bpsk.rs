@@ -6,7 +6,7 @@ use num_complex::Complex32;
 use rand::Rng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use super::SignalSource;
+use super::SignalModel;
 
 pub struct BpskFrame {
     /// Total bit stream: sync word followed by payload, +1 / −1 valued.
@@ -34,7 +34,7 @@ impl BpskFrame {
     }
 }
 
-impl SignalSource for BpskFrame {
+impl SignalModel for BpskFrame {
     fn carrier_hz(&self) -> f64 { self.carrier_hz }
 
     fn evaluate_baseband_batch(&self, t_emit: &Array1<f64>) -> Array1<Complex32> {

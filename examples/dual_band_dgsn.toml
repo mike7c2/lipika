@@ -1,0 +1,111 @@
+# DGSN dual-band scene: a UHF beacon from the ISS + 6 synthetic GPS-like
+# transmitters at L1, observed by 2 ground receivers each running BOTH a
+# UHF observation band AND a GNSS L1 band off the same OCXO clock.
+#
+# Demonstrates the multi-band-per-receiver architecture: each receiver's
+# clock noise is realised once and used coherently across both bands,
+# matching real DGSN hardware where one OCXO drives multiple RF chains.
+
+[scene]
+epoch_unix = 1717260840.0
+duration_s = 30.0   # short for fast iteration; bump to 250 for full DGSN
+
+# ---------- transmitters ----------
+
+[[transmitter]]
+name = "iss_uhf_beacon"
+carrier_hz = 437_000_000.0
+tx_power_dbw = 0.0   # 1 W
+kind = "bpsk"
+bit_rate_bps = 9600.0
+payload_bits = 287968
+payload_seed = 2026_05_31
+sync_word = [-1, 1, 1, -1, 1, -1, -1, 1, 1, 1, 1, -1, -1, 1, -1, 1, -1, 1, -1, -1, 1, 1, -1, -1, 1, -1, 1, 1, -1, -1, -1, 1]
+trajectory = { kind = "tle", line1 = "1 25544U 98067A   24001.50000000  .00010000  00000+0  18000-3 0  9994", line2 = "2 25544  51.6400 100.0000 0001000  90.0000 270.0000 15.50000000000009" }
+
+# 6 synthetic GPS-like transmitters at L1.
+[[transmitter]]
+name = "gps_prn01"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 13.0  # ~20 W EIRP — typical GPS spec
+kind = "ca_code"
+prn = 1
+epoch_unix = 1717260840.0
+trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, inclination_deg = 55.0, raan_deg = 0.0, true_anomaly_deg_at_epoch = 30.0, epoch_unix = 1717260840.0 }
+
+[[transmitter]]
+name = "gps_prn05"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 13.0
+kind = "ca_code"
+prn = 5
+epoch_unix = 1717260840.0
+trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, inclination_deg = 55.0, raan_deg = 0.0, true_anomaly_deg_at_epoch = 150.0, epoch_unix = 1717260840.0 }
+
+[[transmitter]]
+name = "gps_prn10"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 13.0
+kind = "ca_code"
+prn = 10
+epoch_unix = 1717260840.0
+trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, inclination_deg = 55.0, raan_deg = 0.0, true_anomaly_deg_at_epoch = 270.0, epoch_unix = 1717260840.0 }
+
+[[transmitter]]
+name = "gps_prn14"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 13.0
+kind = "ca_code"
+prn = 14
+epoch_unix = 1717260840.0
+trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, inclination_deg = 55.0, raan_deg = 60.0, true_anomaly_deg_at_epoch = 20.0, epoch_unix = 1717260840.0 }
+
+[[transmitter]]
+name = "gps_prn17"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 13.0
+kind = "ca_code"
+prn = 17
+epoch_unix = 1717260840.0
+trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, inclination_deg = 55.0, raan_deg = 60.0, true_anomaly_deg_at_epoch = 140.0, epoch_unix = 1717260840.0 }
+
+[[transmitter]]
+name = "gps_prn21"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 13.0
+kind = "ca_code"
+prn = 21
+epoch_unix = 1717260840.0
+trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, inclination_deg = 55.0, raan_deg = 60.0, true_anomaly_deg_at_epoch = 260.0, epoch_unix = 1717260840.0 }
+
+# ---------- receivers ----------
+
+[[receiver]]
+name = "glasgow"
+trajectory = { kind = "stationary_geodetic", lat_deg = 55.86, lon_deg = -4.25, h_m = 10.0 }
+clock = { allan_deviation_1s = 1e-11, frequency_offset_y0 = 0.5e-6 }
+[[receiver.band]]
+band_id = "uhf_obs"
+lo_carrier_hz = 437_000_000.0
+sample_rate_hz = 48_000.0
+noise_temperature_k = 290.0
+[[receiver.band]]
+band_id = "gnss_l1"
+lo_carrier_hz = 1_575_420_000.0
+sample_rate_hz = 1_500_000.0
+noise_temperature_k = 290.0
+
+[[receiver]]
+name = "london"
+trajectory = { kind = "stationary_geodetic", lat_deg = 51.51, lon_deg = -0.13, h_m = 10.0 }
+clock = { allan_deviation_1s = 1e-11, frequency_offset_y0 = -0.3e-6 }
+[[receiver.band]]
+band_id = "uhf_obs"
+lo_carrier_hz = 437_000_000.0
+sample_rate_hz = 48_000.0
+noise_temperature_k = 290.0
+[[receiver.band]]
+band_id = "gnss_l1"
+lo_carrier_hz = 1_575_420_000.0
+sample_rate_hz = 1_500_000.0
+noise_temperature_k = 290.0

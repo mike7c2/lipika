@@ -1,11 +1,17 @@
-//! Signal sources — anything that can be evaluated at an emission time
-//! `t_emit` to produce a complex baseband sample.
+//! Signal models — purely algebraic descriptions of what a transmitter is
+//! emitting, evaluable at any emission time `t_emit`.
 //!
-//! The contract is **time-domain**, not frequency-domain. A source knows
-//! its nominal carrier frequency (used downstream for the mix to baseband
-//! at the observer) and produces baseband IQ at whatever emission times
-//! the channel asks for. This makes Doppler emerge naturally from delay-
-//! varying queries rather than being a separate frequency-shift step.
+//! The contract is **time-domain and stateless**: the model is a function
+//! `s(t)`, not a pre-sampled buffer. This makes the receiver-side clock
+//! interpolation trivial (just call `s(t_corrected)`) and avoids any
+//! resampling artefacts that pre-sampled-then-interpolated signals would
+//! introduce.
+//!
+//! A model exposes its nominal RF centre frequency via `carrier_hz()`;
+//! it does NOT itself apply the carrier — that's done downstream when
+//! mixing to the receiver's baseband against the receiver's LO. The
+//! model only produces complex baseband samples in the transmitter's
+//! own frame.
 
 use ndarray::Array1;
 use num_complex::Complex32;
@@ -14,14 +20,14 @@ pub mod bpsk;
 pub mod cw;
 pub mod ca_code;
 
-pub trait SignalSource: Send + Sync {
-    /// Nominal centre frequency of the source's RF emission (Hz).
-    /// The observer mixes against its own LO at (this − offset) before
-    /// recording IQ, so the Doppler emerges from delay-varying queries.
+pub trait SignalModel: Send + Sync {
+    /// Nominal centre frequency of the RF emission (Hz). The receiver
+    /// will mix against its own LO at `(this − IF)` before recording IQ,
+    /// so the Doppler shift falls out of delay-varying emission-time
+    /// queries rather than being a separate frequency-shift step.
     fn carrier_hz(&self) -> f64;
 
-    /// Evaluate the source's complex baseband signal at the requested
-    /// emission times (one per output sample at the observer). Returns
-    /// the same length as the input.
+    /// Evaluate the complex baseband signal at the requested emission
+    /// times. Returns the same length as the input.
     fn evaluate_baseband_batch(&self, t_emit: &Array1<f64>) -> Array1<Complex32>;
 }

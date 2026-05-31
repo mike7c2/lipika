@@ -3,7 +3,7 @@
 use ndarray::Array1;
 use num_complex::Complex32;
 
-use super::SignalSource;
+use super::SignalModel;
 
 pub struct ContinuousWave {
     pub carrier_hz: f64,
@@ -13,7 +13,7 @@ pub struct ContinuousWave {
     pub baseband_offset_hz: f64,
 }
 
-impl SignalSource for ContinuousWave {
+impl SignalModel for ContinuousWave {
     fn carrier_hz(&self) -> f64 { self.carrier_hz }
 
     fn evaluate_baseband_batch(&self, t_emit: &Array1<f64>) -> Array1<Complex32> {

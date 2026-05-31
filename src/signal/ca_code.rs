@@ -7,7 +7,7 @@
 use ndarray::Array1;
 use num_complex::Complex32;
 
-use super::SignalSource;
+use super::SignalModel;
 
 pub const CA_CHIP_RATE_HZ: f64 = 1_023_000.0;
 pub const CA_CODE_LENGTH: usize = 1023;
@@ -74,7 +74,7 @@ impl CaCodeSource {
     }
 }
 
-impl SignalSource for CaCodeSource {
+impl SignalModel for CaCodeSource {
     fn carrier_hz(&self) -> f64 { self.carrier_hz }
 
     fn evaluate_baseband_batch(&self, t_emit: &Array1<f64>) -> Array1<Complex32> {

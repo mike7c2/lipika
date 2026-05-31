@@ -1,4 +1,16 @@
-//! Scene orchestration: turn a `SceneConfig` into per-observer IQ.
+//! Scene orchestration: turn a `SceneConfig` into per-(receiver, band) IQ.
+//!
+//! The high-level flow:
+//!
+//! 1. Build all transmitters (signal model + trajectory + tx power).
+//! 2. Build all receivers (trajectory + clock + 1+ bands).
+//! 3. For each (receiver, band) pair, run in parallel via rayon:
+//!    - Realise the receiver's clock track Δt(t) (shared across this
+//!      receiver's bands).
+//!    - For each transmitter, evaluate its contribution at this band's
+//!      output samples via `channel::transmitter_contribution_at_receiver`.
+//!    - Sum across transmitters, add AWGN, package the output.
+//! 4. Caller writes each band's IQ to a separate `.npy` file.
 
 use std::sync::Arc;
 
@@ -9,14 +21,17 @@ use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 use rayon::prelude::*;
 
-use crate::channel::{add_awgn, source_contribution_at_observer};
+use crate::channel::{add_awgn_at_power, thermal_noise_power_w, transmitter_contribution_at_receiver};
 use crate::clock::{NodeClock, NodeClockSpec};
-use crate::config::{ObserverConfig, SceneConfig, SourceConfig, SourceKind, TrajectoryConfig};
+use crate::config::{
+    ReceiverBandConfig, ReceiverConfig, SceneConfig, SignalKind, TrajectoryConfig,
+    TransmitterConfig,
+};
 use crate::geometry::{
     kepler::CircularKeplerian, stationary::Stationary, tle::TleTrajectory, Trajectory,
 };
 use crate::output::ObserverOutput;
-use crate::signal::{bpsk::BpskFrame, ca_code::CaCodeSource, cw::ContinuousWave, SignalSource};
+use crate::signal::{bpsk::BpskFrame, ca_code::CaCodeSource, cw::ContinuousWave, SignalModel};
 
 const NEWTON_ITERATIONS: usize = 2;
 
@@ -44,126 +59,149 @@ fn build_trajectory(cfg: &TrajectoryConfig) -> Result<Arc<dyn Trajectory>> {
     })
 }
 
-fn build_source(cfg: &SourceConfig) -> Result<Arc<dyn SignalSource>> {
+fn build_signal(cfg: &TransmitterConfig) -> Result<Arc<dyn SignalModel>> {
     Ok(match &cfg.kind {
-        SourceKind::Cw { baseband_offset_hz } => Arc::new(ContinuousWave {
+        SignalKind::Cw { baseband_offset_hz } => Arc::new(ContinuousWave {
             carrier_hz: cfg.carrier_hz,
             baseband_offset_hz: *baseband_offset_hz,
         }),
-        SourceKind::Bpsk { bit_rate_bps, payload_bits, payload_seed, sync_word } => {
+        SignalKind::Bpsk { bit_rate_bps, payload_bits, payload_seed, sync_word } => {
             let mut rng = Xoshiro256PlusPlus::seed_from_u64(*payload_seed);
             Arc::new(BpskFrame::random(
                 sync_word, *payload_bits, *bit_rate_bps,
                 0.0, cfg.carrier_hz, &mut rng,
             ))
         }
-        SourceKind::CaCode { prn, epoch_unix } => {
+        SignalKind::CaCode { prn, epoch_unix } => {
             Arc::new(CaCodeSource::new(cfg.carrier_hz, *prn, *epoch_unix))
         }
     })
 }
 
-struct Observer {
+struct Transmitter {
+    #[allow(dead_code)] // for logging / future use
     name: String,
-    lo_carrier_hz: f64,
-    sample_rate_hz: f64,
-    snr_db_per_source: f64,
+    signal: Arc<dyn SignalModel>,
     trajectory: Arc<dyn Trajectory>,
-    clock_spec: NodeClockSpec,
+    tx_power_w: f64,
 }
 
-impl Observer {
-    fn from_config(cfg: &ObserverConfig) -> Result<Self> {
+impl Transmitter {
+    fn from_config(cfg: &TransmitterConfig) -> Result<Self> {
         Ok(Self {
             name: cfg.name.clone(),
-            lo_carrier_hz: cfg.lo_carrier_hz,
-            sample_rate_hz: cfg.sample_rate_hz,
-            snr_db_per_source: cfg.snr_db_per_source,
+            signal: build_signal(cfg)?,
             trajectory: build_trajectory(&cfg.trajectory)?,
-            clock_spec: cfg.clock,
+            tx_power_w: 10f64.powf(cfg.tx_power_dbw / 10.0),
         })
     }
 }
 
-struct SourceBundle {
-    source: Arc<dyn SignalSource>,
+struct Receiver {
+    name: String,
     trajectory: Arc<dyn Trajectory>,
+    clock_spec: NodeClockSpec,
+    bands: Vec<ReceiverBandConfig>,
 }
 
-/// Generate per-observer IQ for an entire scene.
-pub fn run_scene(scene: &SceneConfig, rng_seed_base: u64) -> Result<Vec<ObserverOutput>> {
-    let observers: Vec<Observer> = scene
-        .observers
-        .iter()
-        .map(Observer::from_config)
-        .collect::<Result<Vec<_>>>()?;
-    let sources: Vec<SourceBundle> = scene
-        .sources
-        .iter()
-        .map(|sc| {
-            Ok(SourceBundle {
-                source: build_source(sc)?,
-                trajectory: build_trajectory(&sc.trajectory)?,
-            })
+impl Receiver {
+    fn from_config(cfg: &ReceiverConfig) -> Result<Self> {
+        if cfg.bands.is_empty() {
+            anyhow::bail!("receiver '{}' has no bands; at least one [[receiver.band]] required", cfg.name);
+        }
+        Ok(Self {
+            name: cfg.name.clone(),
+            trajectory: build_trajectory(&cfg.trajectory)?,
+            clock_spec: cfg.clock,
+            bands: cfg.bands.clone(),
         })
+    }
+}
+
+/// Generate per-(receiver, band) IQ for an entire scene. Output naming:
+/// `<receiver_name>__<band_id>` so multi-band receivers get distinct files.
+pub fn run_scene(scene: &SceneConfig, rng_seed_base: u64) -> Result<Vec<ObserverOutput>> {
+    let transmitters: Vec<Transmitter> = scene
+        .transmitters
+        .iter()
+        .map(Transmitter::from_config)
+        .collect::<Result<Vec<_>>>()?;
+    let receivers: Vec<Receiver> = scene
+        .receivers
+        .iter()
+        .map(Receiver::from_config)
         .collect::<Result<Vec<_>>>()?;
 
-    // Run observers in parallel across rayon threads. Each observer is
-    // independent (its own RNG seed, its own clock realisation).
-    let outputs: Result<Vec<ObserverOutput>> = observers
+    // Enumerate all (receiver, band) work items.
+    let mut work: Vec<(usize, usize)> = Vec::new();
+    for (r_idx, rx) in receivers.iter().enumerate() {
+        for (b_idx, _) in rx.bands.iter().enumerate() {
+            work.push((r_idx, b_idx));
+        }
+    }
+
+    let outputs: Result<Vec<ObserverOutput>> = work
         .par_iter()
         .enumerate()
-        .map(|(idx, observer)| {
+        .map(|(work_idx, &(r_idx, b_idx))| {
             let mut rng = Xoshiro256PlusPlus::seed_from_u64(
-                rng_seed_base.wrapping_add(idx as u64)
+                rng_seed_base.wrapping_add(work_idx as u64)
             );
-            generate_one_observer(observer, &sources, scene, &mut rng)
+            generate_one_band(&receivers[r_idx], b_idx, &transmitters, scene, &mut rng)
         })
         .collect();
     outputs
 }
 
-fn generate_one_observer(
-    observer: &Observer,
-    sources: &[SourceBundle],
+fn generate_one_band(
+    receiver: &Receiver,
+    band_idx: usize,
+    transmitters: &[Transmitter],
     scene: &SceneConfig,
     rng: &mut Xoshiro256PlusPlus,
 ) -> Result<ObserverOutput> {
-    let n = (observer.sample_rate_hz * scene.scene.duration_s).round() as usize;
-    // t_local — observer's nominal sample epochs in its own time frame.
+    let band = &receiver.bands[band_idx];
+    let n = (band.sample_rate_hz * scene.scene.duration_s).round() as usize;
     let t_local = Array1::from_iter(
-        (0..n).map(|i| scene.scene.epoch_unix + i as f64 / observer.sample_rate_hz)
+        (0..n).map(|i| scene.scene.epoch_unix + i as f64 / band.sample_rate_hz)
     );
 
-    // Clock realisation. Master rate matches sample rate for now; could
-    // be raised when the observer is multi-band.
+    // The receiver's clock realisation. Master rate = this band's sample rate.
+    // (For tighter inter-band coherence in real DGSN hardware, all bands
+    // should pull from the same underlying clock track; we approximate by
+    // re-realising at each band's rate. The deterministic terms — c, m·t —
+    // are identical between bands; only the white-FM ε(t) realisation
+    // differs in its sample grid. For Allan deviations < 1e-9 this gap is
+    // numerically negligible.)
     let clock = NodeClock::new(
-        observer.clock_spec, scene.scene.epoch_unix,
-        observer.sample_rate_hz, scene.scene.duration_s, rng,
+        receiver.clock_spec, scene.scene.epoch_unix,
+        band.sample_rate_hz, scene.scene.duration_s, rng,
     );
     let delta_t = clock.time_offset_at(&t_local);
     let t_utc = &t_local - &delta_t;
-    let observer_position = observer.trajectory.position_ecef_batch(&t_utc);
+    let receiver_position = receiver.trajectory.position_ecef_batch(&t_utc);
 
     let mut accumulator = Array1::<Complex32>::zeros(n);
-    for bundle in sources {
-        let contribution = source_contribution_at_observer(
-            &*bundle.source, &*bundle.trajectory,
-            &observer_position, &t_local, &t_utc, &delta_t,
-            observer.lo_carrier_hz, NEWTON_ITERATIONS,
+    for tx in transmitters {
+        let contribution = transmitter_contribution_at_receiver(
+            &*tx.signal, &*tx.trajectory,
+            &receiver_position, &t_local, &t_utc, &delta_t,
+            band.lo_carrier_hz, tx.tx_power_w, NEWTON_ITERATIONS,
         );
         accumulator = accumulator + contribution;
     }
 
-    // AWGN — variance picked so each source sees `snr_db_per_source`.
-    // (Composite SNR across N sources is therefore +10 log10(N) higher.)
-    add_awgn(&mut accumulator, observer.snr_db_per_source, 1.0, rng);
+    let noise_power_w = band.noise_power_w.unwrap_or_else(||
+        thermal_noise_power_w(band.noise_temperature_k, band.sample_rate_hz)
+    );
+    add_awgn_at_power(&mut accumulator, noise_power_w, rng);
 
+    let composite_name = format!("{}__{}", receiver.name, band.band_id);
     Ok(ObserverOutput {
-        name: observer.name.clone(),
+        name: composite_name,
         epoch_unix: scene.scene.epoch_unix,
-        sample_rate_hz: observer.sample_rate_hz,
-        lo_carrier_hz: observer.lo_carrier_hz,
+        sample_rate_hz: band.sample_rate_hz,
+        lo_carrier_hz: band.lo_carrier_hz,
         iq: accumulator,
     })
 }

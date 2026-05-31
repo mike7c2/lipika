@@ -7,7 +7,7 @@ use ndarray::{Array1, Array2};
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use dgsn_iq_gen::channel::source_contribution_at_observer;
+use dgsn_iq_gen::channel::transmitter_contribution_at_receiver;
 use dgsn_iq_gen::geometry::{kepler::CircularKeplerian, stationary::Stationary, Trajectory};
 use dgsn_iq_gen::signal::ca_code::CaCodeSource;
 
@@ -39,11 +39,11 @@ fn one_sv_pass(c: &mut Criterion) {
         observer_pos[[2, i]] = p[2];
     }
 
-    c.bench_function("source_contribution_at_observer (5s @ 1.5MHz, 1 SV)", |b| {
+    c.bench_function("transmitter_contribution_at_receiver (5s @ 1.5MHz, 1 SV)", |b| {
         b.iter(|| {
-            source_contribution_at_observer(
+            transmitter_contribution_at_receiver(
                 &source, &sat, &observer_pos, &t_local, &t_utc, &delta_t,
-                1_575_420_000.0, 2,
+                1_575_420_000.0, 20.0, 2,  // 20 W tx power
             )
         })
     });

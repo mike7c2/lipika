@@ -39,10 +39,11 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("loading scene from {}", cli.config.display());
     let scene = SceneConfig::from_toml_file(&cli.config)?;
+    let total_bands: usize = scene.receivers.iter().map(|r| r.bands.len()).sum();
     log::info!(
-        "scene: epoch={} duration={}s, {} sources, {} observers",
+        "scene: epoch={} duration={}s, {} transmitters, {} receivers ({} bands total)",
         scene.scene.epoch_unix, scene.scene.duration_s,
-        scene.sources.len(), scene.observers.len(),
+        scene.transmitters.len(), scene.receivers.len(), total_bands,
     );
 
     let start = std::time::Instant::now();
