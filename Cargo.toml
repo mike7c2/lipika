@@ -47,15 +47,16 @@ env_logger = "0.11"
 npyz = "0.8"
 chrono = "0.4"
 
-# Cross-platform GPU compute via wgpu (Vulkan / Metal / DX12 / WebGPU).
-# All optional behind the `gpu` feature so CPU-only builds stay quick.
-wgpu = { version = "22.1", optional = true }
-bytemuck = { version = "1.18", features = ["derive"], optional = true }
-pollster = { version = "0.3", optional = true }
+# GPU backend (wgpu/WGSL) was prototyped and abandoned — see
+# src/backend/mod.rs for the precision reasoning. Keeping these
+# commented out so the trail is visible if we revisit on datacenter GPUs.
+# wgpu = { version = "22.1", optional = true }
+# bytemuck = { version = "1.18", features = ["derive"], optional = true }
+# pollster = { version = "0.3", optional = true }
+# futures-intrusive = { version = "0.5", optional = true }
 
 [features]
 default = []
-gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]
 
 [dev-dependencies]
 approx = "0.5"

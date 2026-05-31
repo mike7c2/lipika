@@ -29,7 +29,12 @@ GPS-SDR-SIM and friends solve part of this for GPS L1 only. We need:
 ## Status
 
 v0.1 — CPU-only library + CLI. Targets the exp/009-equivalent scene as the
-first thing to reproduce. GPU backend (wgpu + WGSL) is on the roadmap.
+first thing to reproduce. A wgpu/WGSL GPU backend was prototyped and
+abandoned because WGSL has no f64 and carrier-phase math at L-band
+(1.5 GHz × 70 ms = ~1e8 cycles) loses sub-cycle accuracy in f32 before
+any shader code runs. See `src/backend/mod.rs` for the analysis. The
+CPU path is already ~4× faster than the Python pipeline with rayon
+across observers.
 
 ## Build
 
