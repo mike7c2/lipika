@@ -56,11 +56,14 @@ def load_iq(path):
     return iq, meta
 
 
-def run_lipika(repo, config_path, out_dir, threads=0, chunk=2_000_000):
-    """Invoke the release lipika binary on a scene. Streams to `out_dir`."""
+def run_lipika(repo, config_path, out_dir, threads=0, chunk=2_000_000, truth_hz=0.0):
+    """Invoke the release lipika binary on a scene. Streams to `out_dir`.
+    truth_hz > 0 also writes per-receiver geometric truth sidecars."""
     binary = os.path.join(repo, "target", "release", "lipika")
     cmd = [binary, "--config", config_path, "--output", out_dir,
            "--threads", str(threads), "--chunk-samples", str(chunk)]
+    if truth_hz > 0:
+        cmd += ["--truth-hz", str(truth_hz)]
     subprocess.run(cmd, check=True, cwd=repo)
 
 

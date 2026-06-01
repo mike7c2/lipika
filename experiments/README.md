@@ -58,3 +58,42 @@ hardcoded to `0.0` in `build_signal`, so for any real Unix-epoch scene every
 emission time fell out of the bit-stream range and BPSK emitted **pure zeros**.
 Fixed to use the scene epoch; covered by the
 `bpsk_radiates_at_realistic_epoch` regression test.
+
+## Exp 3 — GNSS-disciplined timing rescues TDOA
+
+The keystone result. Each node from Exp 1 additionally carries a **GNSS L1 band
+sharing its clock** (1575.42 MHz, 8.192 Msps, 6 GPS SVs with full LNAV from
+`gps_synth.rnx`), alongside the VHF band. The clock offset measured on the GNSS
+band is — by construction in lipika — the same offset corrupting the VHF TDOA.
+We recover each node's clock by code-phase time transfer against the
+truth-export geometry (`gps.py`), then de-bias the VHF TDOA with it.
+
+| | horizontal | notes |
+|-|-----------:|-------|
+| raw (unsynchronised)   | **76 m** | clocks uncorrected |
+| GNSS-disciplined       | **17 m** | clock recovered from GPS, removed |
+
+Per-node clock recovery lands within **~4 ns** of the configured offsets
+(e.g. ayr 342.4 vs 341.0 ns, stirling −214.6 vs −210.2 ns). This is the full
+distributed-timing loop: GNSS gives each node a common time reference, and that
+reference makes coherent cross-node geolocation work.
+
+### The bug this surfaced — 238 ns timing quantisation
+
+Exp 3 only produced clean numbers *after* fixing a fundamental precision bug it
+exposed. lipika had been doing per-sample timing arithmetic on **absolute Unix
+times** (~1.717×10⁹ s); the f64 ULP there is exactly 2⁻²² s = **238.4 ns**, so
+every sub-238 ns quantity — clock offsets, the Allan walk, the Sagnac term,
+sub-sample delay — was rounded away. Measured directly: configured offsets of
+25/50 ns read back as 0; 130/250 ns as 238 ns; 500 ns as 477 ns — snapping to
+the ULP. (GPS still validated because its delay is range-derived and the
+sample-time jitter averages out in tracking.)
+
+Fixed by moving the precise per-sample maths to an **epoch-relative timebase**
+(seconds since the scene epoch → femtosecond ULP), reconstructing absolute time
+only to query trajectories (where 238 ns ≈ 0.2 mm of orbit motion). The lever is
+magnitude, not bit width — i128/f128 wouldn't help, since precision dies at the
+f64 boundary unless the value crossing it is small. Guarded by
+`clock_offset_survives_at_realistic_epoch` (a 130 ns offset must survive at a
+1.7×10⁹ epoch), and the chunk/thread invariance tests still pass because the
+relative time keys on the global sample index.
