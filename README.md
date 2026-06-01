@@ -271,20 +271,22 @@ For a full **position fix**, two scenes use `nav = "full"`:
   ([`examples/gnss-sdr-real.conf`](examples/gnss-sdr-real.conf).)
 
 With these, GNSS-SDR acquires, tracks, decodes all five subframes, assembles a
-valid ephemeris, and **computes a position fix** at the receiver. Two
-independent checks confirm the signal itself is correct:
+valid ephemeris, and **computes a continuous position fix at the receiver to
+metre level**:
 
-- the `ephemeris_reproduces_circular_trajectory` test runs the receiver's own
-  IS-GPS-200 SV-position algorithm on the broadcast ephemeris and recovers the
-  simulated orbit to **sub-mm**;
-- GNSS-SDR's *measured* pseudorange differences agree with the true geometric
-  ranges to **≈ 30 m RMS** across a 10-minute run.
+- `gps_fix_synthetic` (exact ephemeris): ~2 m horizontal, ~10 m vertical;
+- `gps_real_tle` (osculating ephemeris): ~1–2 m horizontal, with the vertical
+  carrying the two-body-vs-SGP4 residual (tens of metres) — the end-to-end
+  error metric for the stack.
 
-**Status:** PVT currently resolves to ~km with only intermittent fixes. The
-signal is correct (per the checks above); the residual is being traced to a
-receiver-side absolute-pseudorange (common-transit) handling issue, not the
-generator. Tightening this — and a least-squares ephemeris fit for the TLE
-scene — is in progress.
+Two further checks confirm the signal independent of the fix: the
+`ephemeris_reproduces_circular_trajectory` test runs the receiver's own
+IS-GPS-200 SV-position algorithm on the broadcast ephemeris and recovers the
+simulated orbit to **sub-mm**, and GNSS-SDR's *measured* pseudorange
+differences agree with the true geometric ranges to **≈ 30 m RMS**.
+
+A least-squares ephemeris fit (to shrink the TLE-scene vertical residual) is
+the remaining refinement.
 
 ---
 

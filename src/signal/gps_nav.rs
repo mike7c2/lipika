@@ -39,6 +39,9 @@ impl GpsTime {
     }
 }
 
+/// Round a seconds-of-week value to the broadcast `toe`/`toc` 16 s grid.
+fn round_to_16s(sow: f64) -> f64 { (sow / 16.0).round() * 16.0 }
+
 /// Wrap an angle (rad) to [−π, π).
 fn wrap_pi(x: f64) -> f64 {
     let twopi = 2.0 * PI;
@@ -93,18 +96,23 @@ impl Ephemeris {
     ) -> Self {
         let a = orbit.semi_major_axis_m;
         let n = (GPS_MU / a.powi(3)).sqrt();
+        // `toe` is transmitted with a 16 s LSB, so it must sit on the 16 s grid;
+        // M0 has to be referenced to *that* quantised toe, or the receiver
+        // (which uses the decoded toe) places the SV n·Δtoe along its orbit off.
+        let toe = round_to_16s(gps.sow);
         let dt0 = scene_epoch_unix - orbit.epoch_unix;
+        let dt_toe = dt0 + (toe - gps.sow); // orbit epoch → toe
         // e = 0 ⇒ mean anomaly = true anomaly.
-        let m0 = wrap_pi(orbit.true_anomaly_deg_at_epoch.to_radians() + n * dt0);
-        // ECEF node at toe = raan − Ω̇ₑ·dt0; broadcast Ω0 = node + Ω̇ₑ·toe.
+        let m0 = wrap_pi(orbit.true_anomaly_deg_at_epoch.to_radians() + n * dt_toe);
+        // Ωk = Ω0 − Ω̇ₑ·t_sow is toe-independent; Ω0 anchors the ECEF node.
         let omega0 = wrap_pi(
             orbit.raan_deg.to_radians() + GPS_OMEGA_E_DOT * gps.sow - GPS_OMEGA_E_DOT * dt0,
         );
         Self {
             prn,
             week: gps.week,
-            toe_s: gps.sow,
-            toc_s: gps.sow,
+            toe_s: toe,
+            toc_s: toe,
             sqrt_a: a.sqrt(),
             e: 0.0,
             m0_rad: m0,
@@ -130,12 +138,16 @@ impl Ephemeris {
         toe_unix: f64,
         gps_at_toe: GpsTime,
     ) -> Self {
+        // Snap toe to the 16 s transmit grid and evaluate the state there, so
+        // the osculating elements are consistent with the decoded toe.
+        let toe_sow = round_to_16s(gps_at_toe.sow);
+        let toe_unix = toe_unix + (toe_sow - gps_at_toe.sow);
         let r = traj.position_ecef(toe_unix);
         let v = traj.velocity_ecef(toe_unix);
         // Rotate ECEF → GPS quasi-inertial frame at toe (undo Ω̇ₑ·toe), adding
         // Earth rotation to the velocity. Then classical osculating elements
         // give the broadcast set directly (Ω0 = inertial node).
-        let phi = GPS_OMEGA_E_DOT * gps_at_toe.sow;
+        let phi = GPS_OMEGA_E_DOT * toe_sow;
         let (s, c) = phi.sin_cos();
         let r_i = [r[0] * c - r[1] * s, r[0] * s + r[1] * c, r[2]];
         // v_inertial = R_z(phi)·(v_ecef + ω × r_ecef)
@@ -150,8 +162,8 @@ impl Ephemeris {
         Self {
             prn,
             week: gps_at_toe.week,
-            toe_s: gps_at_toe.sow,
-            toc_s: gps_at_toe.sow,
+            toe_s: toe_sow,
+            toc_s: toe_sow,
             sqrt_a: el.a.sqrt(),
             e: el.e,
             m0_rad: wrap_pi(el.m),
@@ -735,7 +747,9 @@ mod tests {
                     let _ = crs;
                     assert!((m0 - eph.m0_rad).abs() < 1e-8, "M0 {m0} vs {}", eph.m0_rad);
                     assert!((sqrt_a - eph.sqrt_a).abs() < 1e-3, "sqrtA {sqrt_a} vs {}", eph.sqrt_a);
-                    assert!((toe - eph.toe_s).abs() < 16.0, "toe {toe} vs {}", eph.toe_s);
+                    // toe must encode losslessly: the receiver uses the decoded
+                    // toe with M0, so any quantisation here mis-places the SV.
+                    assert_eq!(toe, eph.toe_s, "decoded toe != ephemeris toe (must be 16 s-aligned)");
                 }
                 3 => {
                     let o_hi = read_u(&chunk[2], 16, 8);
@@ -755,6 +769,43 @@ mod tests {
     fn sext32(v: u64) -> i64 {
         let v = v & 0xFFFF_FFFF;
         if v & 0x8000_0000 != 0 { v as i64 - (1i64 << 32) } else { v as i64 }
+    }
+
+    #[test]
+    fn decoded_ephemeris_places_satellite_within_metres() {
+        // The faithful end-to-end guard: decode the ephemeris from the bits as
+        // a receiver does, then run the SV-position algorithm with the DECODED
+        // toe/M0 and confirm it reproduces the simulated orbit. A toe/M0
+        // quantisation mismatch (toe has a 16 s LSB) shows up as ~km here.
+        let orbit = CircularKeplerian {
+            semi_major_axis_m: 26_560_000.0, inclination_deg: 55.0, raan_deg: 40.0,
+            true_anomaly_deg_at_epoch: 120.0, epoch_unix: 1_717_260_840.0,
+        };
+        let gps = GpsTime::from_unix(1_717_260_840.0, 18.0);
+        let mut dec = Ephemeris::from_circular_keplerian(&orbit, 1, 1_717_260_840.0, gps);
+        let bits = lnav_bits(&dec, gps, 30.0);
+        let words = decode_words(&bits);
+        for chunk in words.chunks(10) {
+            if chunk.len() < 10 { continue; }
+            match read_u(&chunk[1], 19, 3) {
+                2 => {
+                    dec.m0_rad = sext32((read_u(&chunk[3],16,8) << 24) | read_u(&chunk[4],0,24)) as f64 * p2(-31) * PI;
+                    dec.sqrt_a = (((read_u(&chunk[7],16,8) << 24) | read_u(&chunk[8],0,24)) as f64) * p2(-19);
+                    dec.toe_s = read_u(&chunk[9],0,16) as f64 * 16.0;
+                }
+                3 => {
+                    dec.omega0_rad = sext32((read_u(&chunk[2],16,8) << 24) | read_u(&chunk[3],0,24)) as f64 * p2(-31) * PI;
+                    dec.i0_rad = sext32((read_u(&chunk[4],16,8) << 24) | read_u(&chunk[5],0,24)) as f64 * p2(-31) * PI;
+                }
+                _ => {}
+            }
+        }
+        for dt in [0.0, 30.0, 300.0] {
+            let truth = orbit.position_ecef(1_717_260_840.0 + dt);
+            let sv = sv_position_ecef(&dec, gps.sow + dt);
+            let err = ((truth[0]-sv[0]).powi(2)+(truth[1]-sv[1]).powi(2)+(truth[2]-sv[2]).powi(2)).sqrt();
+            assert!(err < 5.0, "decoded-ephemeris SV error {err:.1} m at dt={dt} (toe/M0 mismatch?)");
+        }
     }
 
     #[test]
