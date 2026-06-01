@@ -32,6 +32,11 @@ struct Cli {
     /// Worker threads for the per-chunk transmitter fan-out (0 = all cores).
     #[arg(long, default_value_t = 0usize)]
     threads: usize,
+    /// If > 0, also write per-receiver geometric truth (delay, range,
+    /// range-rate for every transmitter) sampled at this rate, as
+    /// `<output>/<receiver>__truth.json`. 0 disables it.
+    #[arg(long, default_value_t = 0.0f64)]
+    truth_hz: f64,
     /// Print a per-section CPU profile at the end of the run.
     #[arg(long, default_value_t = false)]
     profile: bool,
@@ -67,6 +72,11 @@ fn main() -> anyhow::Result<()> {
     )?;
     let elapsed = start.elapsed();
     log::info!("pipeline finished in {:.2?}", elapsed);
+
+    if cli.truth_hz > 0.0 {
+        log::info!("writing geometric truth at {} Hz", cli.truth_hz);
+        pipeline::export_truth(&scene, &cli.output, cli.truth_hz)?;
+    }
 
     for m in &manifests {
         log::info!("  wrote {} ({} samples) -> {}", m.name, m.n_samples, m.path.display());

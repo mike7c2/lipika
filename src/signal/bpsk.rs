@@ -12,7 +12,10 @@ pub struct BpskFrame {
     /// Total bit stream: sync word followed by payload, +1 / −1 valued.
     pub bits: Vec<i8>,
     pub bit_rate_bps: f64,
-    pub epoch_unix: f64,
+    /// Bit-0 time tag in **seconds relative to the scene epoch** (the baseband
+    /// is evaluated at epoch-relative emission times; a relative tag keeps the
+    /// bit index precise instead of quantising to the ~238 ns f64 ULP).
+    pub epoch_rel_s: f64,
     pub carrier_hz: f64,
 }
 
@@ -21,7 +24,7 @@ impl BpskFrame {
         sync_word: &[i8],
         n_payload_bits: usize,
         bit_rate_bps: f64,
-        epoch_unix: f64,
+        epoch_rel_s: f64,
         carrier_hz: f64,
         rng: &mut Xoshiro256PlusPlus,
     ) -> Self {
@@ -30,7 +33,7 @@ impl BpskFrame {
         for _ in 0..n_payload_bits {
             bits.push(if rng.gen_bool(0.5) { 1 } else { -1 });
         }
-        Self { bits, bit_rate_bps, epoch_unix, carrier_hz }
+        Self { bits, bit_rate_bps, epoch_rel_s, carrier_hz }
     }
 }
 
@@ -42,7 +45,7 @@ impl SignalModel for BpskFrame {
         let n_bits = self.bits.len() as i64;
         let mut out = Array1::<Complex32>::zeros(t_emit.len());
         for (i, &t) in t_emit.iter().enumerate() {
-            let bit_idx_f = (t - self.epoch_unix) * self.bit_rate_bps;
+            let bit_idx_f = (t - self.epoch_rel_s) * self.bit_rate_bps;
             let bit_idx = bit_idx_f.floor() as i64;
             if bit_idx < 0 || bit_idx >= n_bits {
                 out[i] = Complex32::new(0.0, 0.0);

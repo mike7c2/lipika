@@ -91,6 +91,70 @@ sample_rate_hz = 1_000_000.0
 noise_power_w = 1.0e-18
 "#;
 
+// Two co-located receivers see one CW source; they differ only by a 130 ns
+// clock offset. The carrier-phase difference between their IQ must encode that
+// 130 ns. Regression guard for the f64 absolute-time precision bug: doing the
+// timing maths on absolute Unix times (~1.7e9 s) quantises to the ~238 ns ULP,
+// so a 130 ns offset would collapse to 0 (or snap to 238 ns). Working in
+// epoch-relative time preserves it.
+const TOML_CW_TWO_CLOCKS: &str = r#"
+[scene]
+epoch_unix = 1717260840.0
+duration_s = 0.02
+
+[[transmitter]]
+name = "cw"
+carrier_hz = 1000000.0
+tx_power_dbw = 0.0
+kind = "cw"
+baseband_offset_hz = 0.0
+trajectory = { kind = "stationary_ecef", x_m = 6478137.0, y_m = 0.0, z_m = 0.0 }
+
+[[receiver]]
+name = "rxa"
+trajectory = { kind = "stationary_ecef", x_m = 6378137.0, y_m = 0.0, z_m = 0.0 }
+clock = { initial_time_offset_s = 0.0 }
+[[receiver.band]]
+band_id = "b"
+lo_carrier_hz = 1000000.0
+sample_rate_hz = 100000.0
+noise_power_w = 1.0e-30
+
+[[receiver]]
+name = "rxb"
+trajectory = { kind = "stationary_ecef", x_m = 6378137.0, y_m = 0.0, z_m = 0.0 }
+clock = { initial_time_offset_s = 1.3e-7 }
+[[receiver.band]]
+band_id = "b"
+lo_carrier_hz = 1000000.0
+sample_rate_hz = 100000.0
+noise_power_w = 1.0e-30
+"#;
+
+#[test]
+fn clock_offset_survives_at_realistic_epoch() {
+    let scene: SceneConfig = toml::from_str(TOML_CW_TWO_CLOCKS).unwrap();
+    let outs = run_scene(&scene, /*seed=*/ 7).unwrap();
+    let iq = |name: &str| &outs.iter().find(|o| o.name == name).unwrap().iq;
+    let a = iq("rxb__b"); // Δt = 130 ns
+    let b = iq("rxa__b"); // Δt = 0
+    // mean(a · conj(b)); the carrier phase delay term is identical for the two
+    // co-located receivers, so the residual phase is −2π·f·(Δt_a − Δt_b).
+    let (mut acc_re, mut acc_im) = (0.0_f64, 0.0_f64);
+    for i in 0..a.len() {
+        let (ar, ai) = (a[i].re as f64, a[i].im as f64);
+        let (br, bi) = (b[i].re as f64, b[i].im as f64);
+        acc_re += ar * br + ai * bi;
+        acc_im += ai * br - ar * bi;
+    }
+    let phase = acc_im.atan2(acc_re);
+    let f = 1.0e6;
+    let recovered = -phase / (std::f64::consts::TAU * f); // f·Δt = 0.13 < 0.5 ⇒ unambiguous
+    assert!((recovered - 1.3e-7).abs() < 1e-9,
+            "recovered clock offset {:.2} ns != 130 ns — absolute-time quantisation regressed?",
+            recovered * 1e9);
+}
+
 #[test]
 fn bpsk_radiates_at_realistic_epoch() {
     let scene: SceneConfig = toml::from_str(TOML_BPSK).unwrap();

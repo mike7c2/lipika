@@ -21,9 +21,15 @@ const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_146_7e-5;
 
 /// Solve for emission times `t_emit` such that
 /// `t_emit + |P_src(t_emit) − P_obs(t_utc)| / c = t_utc`
-/// for each entry of `t_utc`. Returns also the per-sample slant range (m).
+/// for each entry of `t_rel_utc`. Returns also the per-sample slant range (m).
 ///
-/// Uses fixed-point iteration from an initial guess of `t_utc − 70 ms`
+/// **Times are epoch-relative** (seconds since the scene epoch). Keeping the
+/// per-sample arithmetic in small magnitudes preserves sub-ns precision — at
+/// absolute Unix time (~1.7e9 s) the f64 ULP is ~238 ns, which would quantise
+/// every delay and clock offset. The absolute epoch is added back only to query
+/// the trajectory (`epoch + t`), where a 238 ns error moves a satellite ~0.2 mm.
+///
+/// Uses fixed-point iteration from an initial guess of `t_rel_utc − 70 ms`
 /// (median LEO/GPS one-way delay); two iterations reach ns precision across
 /// the LEO–GPS altitude range.
 /// Generic monomorphised solver — each concrete `T: Trajectory` gets its
@@ -33,12 +39,13 @@ const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_146_7e-5;
 pub fn solve_emission_times_for<T: Trajectory + ?Sized>(
     source_traj: &T,
     observer_position_utc: &Array2<f64>,
-    t_utc: &Array1<f64>,
+    t_rel_utc: &Array1<f64>,
+    epoch: f64,
     iterations: usize,
 ) -> (Array1<f64>, Array1<f64>) {
-    let n = t_utc.len();
+    let n = t_rel_utc.len();
     assert_eq!(observer_position_utc.dim(), (3, n),
-               "observer_position_utc must be (3, n) matching t_utc length");
+               "observer_position_utc must be (3, n) matching t_rel_utc length");
 
     // Per-sample Newton loop: no (3, N) intermediate allocations, all the
     // hot data stays in registers / L1 cache. Trajectory queries go via
@@ -47,7 +54,7 @@ pub fn solve_emission_times_for<T: Trajectory + ?Sized>(
     let mut t_emit = Array1::<f64>::zeros(n);
     let mut ranges = Array1::<f64>::zeros(n);
     let inv_c = 1.0 / SPEED_OF_LIGHT_M_S;
-    let t_utc_s = t_utc.as_slice().expect("contiguous t_utc");
+    let t_utc_s = t_rel_utc.as_slice().expect("contiguous t_rel_utc");
     let t_emit_s = t_emit.as_slice_mut().expect("contiguous t_emit");
     let ranges_s = ranges.as_slice_mut().expect("contiguous ranges");
     for i in 0..n {
@@ -58,7 +65,8 @@ pub fn solve_emission_times_for<T: Trajectory + ?Sized>(
         let mut t = tu - 0.07;
         let mut r = 0.0;
         for _ in 0..iterations {
-            let [sx, sy, sz] = source_traj.position_ecef(t);
+            // Absolute time only for the orbit query (epoch-tolerant).
+            let [sx, sy, sz] = source_traj.position_ecef(epoch + t);
             // Earth-rotation (Sagnac) correction: the source's ECEF coordinates
             // are taken at emission time `t`, but the geometric light path must
             // be measured in one frame. Rotate the source into the ECEF frame
@@ -88,16 +96,17 @@ pub fn solve_emission_times_for<T: Trajectory + ?Sized>(
 pub fn solve_emission_times(
     source_traj: &AnyTrajectory,
     observer_position_utc: &Array2<f64>,
-    t_utc: &Array1<f64>,
+    t_rel_utc: &Array1<f64>,
+    epoch: f64,
     iterations: usize,
 ) -> (Array1<f64>, Array1<f64>) {
     match source_traj {
         AnyTrajectory::Stationary(s) =>
-            solve_emission_times_for(s, observer_position_utc, t_utc, iterations),
+            solve_emission_times_for(s, observer_position_utc, t_rel_utc, epoch, iterations),
         AnyTrajectory::Precomputed(p) =>
-            solve_emission_times_for(p, observer_position_utc, t_utc, iterations),
+            solve_emission_times_for(p, observer_position_utc, t_rel_utc, epoch, iterations),
         AnyTrajectory::Dyn(d) =>
-            solve_emission_times_for(&**d, observer_position_utc, t_utc, iterations),
+            solve_emission_times_for(&**d, observer_position_utc, t_rel_utc, epoch, iterations),
     }
 }
 
@@ -106,25 +115,29 @@ pub fn solve_emission_times(
 /// intermediate per-source contribution array and the second loop pass
 /// that summing into a band accumulator would otherwise need.
 ///
-/// `t_local` / `t_utc` are the receiver's nominal sample times in
-/// receiver-local / UTC frames. `receiver_lo_carrier_hz` is the receiver-
-/// band LO. `tx_power_w` is the transmitter's EIRP in watts (FSPL).
-/// `accumulator` is `n`-long and is added to in place.
+/// `t_local_rel` / `t_utc_rel` are the receiver's nominal sample times in the
+/// receiver-local / UTC frames, **relative to the scene `epoch`** (seconds).
+/// Working in relative time keeps sub-ns precision (see
+/// [`solve_emission_times_for`]); `epoch` is forwarded so the solver can query
+/// trajectories at absolute time. `receiver_lo_carrier_hz` is the receiver-band
+/// LO. `tx_power_w` is the transmitter's EIRP in watts (FSPL). `accumulator` is
+/// `n`-long and is added to in place.
 pub fn accumulate_transmitter_contribution(
     accumulator: &mut Array1<Complex32>,
     signal: &dyn SignalModel,
     transmitter_traj: &AnyTrajectory,
     receiver_position_utc: &Array2<f64>,
-    t_local: &Array1<f64>,
-    t_utc: &Array1<f64>,
+    t_local_rel: &Array1<f64>,
+    t_utc_rel: &Array1<f64>,
     delta_t_receiver: &Array1<f64>,
     receiver_lo_carrier_hz: f64,
     tx_power_w: f64,
+    epoch: f64,
     newton_iters: usize,
 ) {
-    let n = t_utc.len();
+    let n = t_utc_rel.len();
     let (t_emit, ranges) = profile::time("tx_contribution:newton",
-        || solve_emission_times(transmitter_traj, receiver_position_utc, t_utc, newton_iters));
+        || solve_emission_times(transmitter_traj, receiver_position_utc, t_utc_rel, epoch, newton_iters));
     let baseband = profile::time("tx_contribution:baseband",
         || signal.evaluate_baseband_batch(&t_emit));
     let src_carrier = signal.carrier_hz();
@@ -162,7 +175,7 @@ pub fn accumulate_transmitter_contribution(
     let bb = baseband.as_slice().expect("contiguous baseband");
     let ranges_s = ranges.as_slice().expect("contiguous ranges");
     let delta_t_s = delta_t_receiver.as_slice().expect("contiguous delta_t");
-    let t_local_s = t_local.as_slice().expect("contiguous t_local");
+    let t_local_s = t_local_rel.as_slice().expect("contiguous t_local_rel");
     for i in 0..n {
         let r = ranges_s[i];
         let delay = r * inv_c;
@@ -189,17 +202,18 @@ pub fn transmitter_contribution_at_receiver(
     signal: &dyn SignalModel,
     transmitter_traj: &AnyTrajectory,
     receiver_position_utc: &Array2<f64>,
-    t_local: &Array1<f64>,
-    t_utc: &Array1<f64>,
+    t_local_rel: &Array1<f64>,
+    t_utc_rel: &Array1<f64>,
     delta_t_receiver: &Array1<f64>,
     receiver_lo_carrier_hz: f64,
     tx_power_w: f64,
+    epoch: f64,
     newton_iters: usize,
 ) -> Array1<Complex32> {
-    let mut out = Array1::<Complex32>::zeros(t_utc.len());
+    let mut out = Array1::<Complex32>::zeros(t_utc_rel.len());
     accumulate_transmitter_contribution(
-        &mut out, signal, transmitter_traj, receiver_position_utc, t_local, t_utc,
-        delta_t_receiver, receiver_lo_carrier_hz, tx_power_w, newton_iters,
+        &mut out, signal, transmitter_traj, receiver_position_utc, t_local_rel, t_utc_rel,
+        delta_t_receiver, receiver_lo_carrier_hz, tx_power_w, epoch, newton_iters,
     );
     out
 }
@@ -253,9 +267,11 @@ mod tests {
         let obs = [6_378_137.0, 0.0, 0.0];
         let mut obs_arr = Array2::<f64>::zeros((3, 1));
         for k in 0..3 { obs_arr[[k, 0]] = obs[k]; }
-        let t = Array1::from_vec(vec![1_717_260_840.0]);
+        // Epoch-relative reception time (the stationary source ignores absolute
+        // time; the Sagnac term depends only on the transit r/c).
+        let t_rel = Array1::from_vec(vec![0.0]);
         let traj = AnyTrajectory::Stationary(sat);
-        let (_te, ranges) = solve_emission_times(&traj, &obs_arr, &t, 4);
+        let (_te, ranges) = solve_emission_times(&traj, &obs_arr, &t_rel, 1_717_260_840.0, 4);
         let solved = ranges[0];
 
         let s = [25.0e6, 10.0e6, 0.0];

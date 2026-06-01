@@ -25,8 +25,10 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 use rayon::prelude::*;
 
 use crate::channel::{
-    add_awgn_at_power, thermal_noise_power_w, transmitter_contribution_at_receiver,
+    add_awgn_at_power, solve_emission_times, thermal_noise_power_w,
+    transmitter_contribution_at_receiver,
 };
+use crate::SPEED_OF_LIGHT_M_S;
 use crate::profile;
 use crate::clock::{ClockStream, NodeClockSpec};
 use crate::config::{
@@ -123,23 +125,29 @@ fn build_signal(
         }),
         SignalKind::Bpsk { bit_rate_bps, payload_bits, payload_seed, sync_word } => {
             let mut rng = Xoshiro256PlusPlus::seed_from_u64(*payload_seed);
+            // Bit 0 is emitted at the scene epoch ⇒ epoch-relative tag 0.0.
             Arc::new(BpskFrame::random(
                 sync_word, *payload_bits, *bit_rate_bps,
-                scene.scene.epoch_unix, cfg.carrier_hz, &mut rng,
+                0.0, cfg.carrier_hz, &mut rng,
             ))
         }
-        SignalKind::CaCode { prn, epoch_unix, nav, nav_seed } => match nav {
-            NavMode::Off =>
-                Arc::new(CaCodeSource::new(cfg.carrier_hz, *prn, *epoch_unix)),
-            NavMode::Dummy =>
-                Arc::new(CaCodeSource::with_nav_data(
-                    cfg.carrier_hz, *prn, *epoch_unix, *nav_seed)),
-            NavMode::Full => {
-                let bits = build_lnav_bits(cfg, raw_traj, scene, *prn)?;
-                Arc::new(CaCodeSource::with_full_nav(
-                    cfg.carrier_hz, *prn, *epoch_unix, bits))
+        SignalKind::CaCode { prn, epoch_unix, nav, nav_seed } => {
+            // Signals are evaluated at epoch-relative emission times, so the
+            // chip-0 tag must be relative to the scene epoch too.
+            let epoch_rel = *epoch_unix - scene.scene.epoch_unix;
+            match nav {
+                NavMode::Off =>
+                    Arc::new(CaCodeSource::new(cfg.carrier_hz, *prn, epoch_rel)),
+                NavMode::Dummy =>
+                    Arc::new(CaCodeSource::with_nav_data(
+                        cfg.carrier_hz, *prn, epoch_rel, *nav_seed)),
+                NavMode::Full => {
+                    let bits = build_lnav_bits(cfg, raw_traj, scene, *prn)?;
+                    Arc::new(CaCodeSource::with_full_nav(
+                        cfg.carrier_hz, *prn, epoch_rel, bits))
+                }
             }
-        },
+        }
     })
 }
 
@@ -380,6 +388,75 @@ pub fn run_scene_to_dir(
     })
 }
 
+/// Export geometric truth alongside the IQ. For every (receiver, transmitter)
+/// pair this writes the true light-time delay — from the *same* Sagnac-correct
+/// emission solve the signal uses — plus slant range and range-rate, sampled on
+/// a coarse grid at `truth_hz`. One `<dir>/<receiver>__truth.json` per receiver.
+///
+/// The grid is treated as ideal UTC (no receiver clock), so this is the
+/// clock-free geometry baked into the signal. An analysis can therefore predict
+/// each signal's arrival and Doppler without re-deriving orbits, the Sagnac
+/// term or leap seconds — the residual it then measures is purely the receiver
+/// clock (time transfer) or the estimator error (Doppler / TDOA).
+pub fn export_truth(scene: &SceneConfig, dir: &Path, truth_hz: f64) -> Result<()> {
+    if truth_hz <= 0.0 {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir)?;
+    let (transmitters, receivers, _work) = prepare_scene(scene)?;
+    let epoch = scene.scene.epoch_unix;
+    let dur = scene.scene.duration_s;
+    let ng = ((dur * truth_hz).round() as usize).max(1) + 1;
+    let dt = 1.0 / truth_hz;
+    // Epoch-relative grid for the geometry solve; absolute only for the JSON.
+    let t_grid_rel = Array1::from_iter((0..ng).map(|k| k as f64 * dt));
+    let t_grid_abs = t_grid_rel.mapv(|x| epoch + x);
+
+    for receiver in &receivers {
+        let rx_pos = receiver.trajectory.position_ecef_batch(&t_grid_abs);
+        let mut txs = Vec::new();
+        for (i, tx) in transmitters.iter().enumerate() {
+            // Extra Newton iterations vs the per-sample path: this is a coarse
+            // one-off grid, so the cost is negligible and convergence certain.
+            let (_t_emit, ranges) = solve_emission_times(
+                &tx.trajectory, &rx_pos, &t_grid_rel, epoch, NEWTON_ITERATIONS.max(4),
+            );
+            let delay: Vec<f64> = ranges.iter().map(|&r| r / SPEED_OF_LIGHT_M_S).collect();
+            let n = ranges.len();
+            let mut rr = vec![0.0_f64; n];
+            if n >= 2 {
+                for k in 0..n {
+                    rr[k] = if k == 0 {
+                        (ranges[1] - ranges[0]) / dt
+                    } else if k == n - 1 {
+                        (ranges[n - 1] - ranges[n - 2]) / dt
+                    } else {
+                        (ranges[k + 1] - ranges[k - 1]) / (2.0 * dt)
+                    };
+                }
+            }
+            let mut d = transmitter_descriptor(&scene.transmitters[i]);
+            d["range_m"] = serde_json::json!(ranges.to_vec());
+            d["delay_s"] = serde_json::json!(delay);
+            d["range_rate_m_s"] = serde_json::json!(rr);
+            txs.push(d);
+        }
+        let truth = serde_json::json!({
+            "receiver": receiver.name,
+            "epoch_unix": epoch,
+            "duration_s": dur,
+            "grid_hz": truth_hz,
+            "t_utc": t_grid_abs.to_vec(),
+            "transmitters": txs,
+        });
+        std::fs::write(
+            dir.join(format!("{}__truth.json", receiver.name)),
+            serde_json::to_string(&truth)?,
+        )?;
+    }
+    Ok(())
+}
+
 /// Build transmitters + receivers and enumerate (receiver, band) work items.
 type PreparedScene = (Vec<Transmitter>, Vec<Receiver>, Vec<(usize, usize)>);
 fn prepare_scene(scene: &SceneConfig) -> Result<PreparedScene> {
@@ -439,8 +516,10 @@ fn generate_band(
     let master_rate = receiver.bands.iter()
         .map(|b| b.sample_rate_hz)
         .fold(0.0_f64, f64::max);
+    // The clock runs in epoch-relative time (start = 0.0): all per-sample
+    // timing is kept at small magnitudes so sub-ns offsets survive f64.
     let mut clock = ClockStream::new(
-        receiver.clock_spec, epoch, master_rate,
+        receiver.clock_spec, 0.0, master_rate,
         Xoshiro256PlusPlus::seed_from_u64(clock_seed(rng_seed_base, r_idx)),
     );
     let mut noise_rng = Xoshiro256PlusPlus::seed_from_u64(noise_seed(rng_seed_base, work_idx));
@@ -468,18 +547,22 @@ fn generate_band(
         let i1 = (i0 + chunk_samples).min(n);
         let clen = i1 - i0;
 
-        // Absolute sample times from the GLOBAL index (never accumulate time).
-        let t_local = Array1::from_iter((i0..i1).map(|i| epoch + i as f64 / fs));
+        // Epoch-relative sample times from the GLOBAL index (never accumulate
+        // time, and keep magnitudes small so sub-ns terms survive f64). The
+        // global index keeps these identical regardless of chunking.
+        let t_local_rel = Array1::from_iter((i0..i1).map(|i| i as f64 / fs));
         let delta_t = profile::time("clock:stream", || {
             let mut d = Array1::<f64>::zeros(clen);
-            for (j, &t) in t_local.iter().enumerate() {
+            for (j, &t) in t_local_rel.iter().enumerate() {
                 d[j] = clock.delta_t_at(t);
             }
             d
         });
-        let t_utc = &t_local - &delta_t;
+        let t_utc_rel = &t_local_rel - &delta_t;
+        // Trajectory queries need absolute time; a 238 ns rounding here is
+        // sub-mm of orbit motion, so reconstruct the absolute UTC grid only here.
         let receiver_position = profile::time("receiver:position_batch",
-            || receiver.trajectory.position_ecef_batch(&t_utc));
+            || receiver.trajectory.position_ecef_batch(&t_utc_rel.mapv(|x| epoch + x)));
 
         // Parallel over the overlapping transmitters → one contribution buffer
         // each; reduce in fixed transmitter order (deterministic f32 sum).
@@ -490,8 +573,8 @@ fn generate_band(
                     let tx = &transmitters[i];
                     transmitter_contribution_at_receiver(
                         &*tx.signal, &tx.trajectory,
-                        &receiver_position, &t_local, &t_utc, &delta_t,
-                        lo, tx.tx_power_w, NEWTON_ITERATIONS,
+                        &receiver_position, &t_local_rel, &t_utc_rel, &delta_t,
+                        lo, tx.tx_power_w, epoch, NEWTON_ITERATIONS,
                     )
                 })
                 .collect();
@@ -588,5 +671,44 @@ mod tests {
         // if its centre is outside the band's own bandwidth.
         let centre = GNSS_LO + 5_000_000.0; // 5 MHz away
         assert!(bands_overlap(centre, 20_000_000.0, GNSS_LO, GNSS_BW));
+    }
+
+    #[test]
+    fn truth_export_delay_matches_geometry() {
+        // For a stationary tx/rx pair the exported delay must equal the
+        // straight-line range / c, and the range-rate must be ~0.
+        use crate::config::SceneConfig;
+        let scene: SceneConfig = toml::from_str(r#"
+[scene]
+epoch_unix = 1717260840.0
+duration_s = 0.1
+
+[[transmitter]]
+name = "src"
+carrier_hz = 1_000_000_000.0
+kind = "cw"
+baseband_offset_hz = 0.0
+trajectory = { kind = "stationary_ecef", x_m = 7000000.0, y_m = 0.0, z_m = 0.0 }
+
+[[receiver]]
+name = "rx"
+trajectory = { kind = "stationary_ecef", x_m = 7000000.0, y_m = 0.0, z_m = 300000.0 }
+[[receiver.band]]
+band_id = "b"
+lo_carrier_hz = 1_000_000_000.0
+sample_rate_hz = 1_000_000.0
+"#).unwrap();
+        let dir = std::env::temp_dir().join("lipika_truth_export_test");
+        super::export_truth(&scene, &dir, 100.0).unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("rx__truth.json")).unwrap()).unwrap();
+        let tx0 = &v["transmitters"][0];
+        let delay0 = tx0["delay_s"][0].as_f64().unwrap();
+        let expected = 300_000.0 / crate::SPEED_OF_LIGHT_M_S;
+        assert!((delay0 - expected).abs() < 1e-9,
+                "exported delay {delay0} != range/c {expected}");
+        let rr0 = tx0["range_rate_m_s"][0].as_f64().unwrap();
+        assert!(rr0.abs() < 1e-3, "stationary range-rate {rr0} should be ~0");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -121,9 +121,11 @@ enum Nav {
 pub struct CaCodeSource {
     pub carrier_hz: f64,
     pub prn: usize,
-    /// GPS time tag for chip 0 (UTC seconds); the pass-start epoch for a
-    /// synthetic scene.
-    pub epoch_unix: f64,
+    /// Time tag for chip 0, in **seconds relative to the scene epoch**. The
+    /// baseband is evaluated at epoch-relative emission times, so keeping this
+    /// relative preserves sub-ns code-phase precision (an absolute Unix tag
+    /// would quantise to the ~238 ns f64 ULP).
+    pub epoch_rel_s: f64,
     code: Vec<i8>,
     nav: Nav,
 }
@@ -131,27 +133,27 @@ pub struct CaCodeSource {
 impl CaCodeSource {
     /// Pure C/A code, no navigation data (the code-phase-only convention).
     /// Kept for benches/tests and any pure-code downstream pipeline.
-    pub fn new(carrier_hz: f64, prn: usize, epoch_unix: f64) -> Self {
+    pub fn new(carrier_hz: f64, prn: usize, epoch_rel_s: f64) -> Self {
         let code = ca_code(prn);
-        Self { carrier_hz, prn, epoch_unix, code, nav: Nav::Off }
+        Self { carrier_hz, prn, epoch_rel_s, code, nav: Nav::Off }
     }
 
     /// C/A code with a 50 bps navigation data overlay (preamble + pseudo-
     /// random payload). `nav_seed` is folded with the PRN so distinct SVs
     /// carry distinct data while sharing the fixed `0x8B` preamble.
-    pub fn with_nav_data(carrier_hz: f64, prn: usize, epoch_unix: f64, nav_seed: u64) -> Self {
+    pub fn with_nav_data(carrier_hz: f64, prn: usize, epoch_rel_s: f64, nav_seed: u64) -> Self {
         let code = ca_code(prn);
         let seed = nav_seed
             .wrapping_add((prn as u64).wrapping_mul(0xD1B5_4A32_D192_ED03));
-        Self { carrier_hz, prn, epoch_unix, code, nav: Nav::Dummy(NavData { seed }) }
+        Self { carrier_hz, prn, epoch_rel_s, code, nav: Nav::Dummy(NavData { seed }) }
     }
 
     /// C/A code carrying a fully-formed LNAV bit stream (see
     /// [`super::gps_nav`]). `lnav_bits` is the ±1 sequence at 50 bps starting
-    /// at `epoch_unix`.
-    pub fn with_full_nav(carrier_hz: f64, prn: usize, epoch_unix: f64, lnav_bits: Vec<i8>) -> Self {
+    /// at `epoch_rel_s`.
+    pub fn with_full_nav(carrier_hz: f64, prn: usize, epoch_rel_s: f64, lnav_bits: Vec<i8>) -> Self {
         let code = ca_code(prn);
-        Self { carrier_hz, prn, epoch_unix, code, nav: Nav::Full(lnav_bits) }
+        Self { carrier_hz, prn, epoch_rel_s, code, nav: Nav::Full(lnav_bits) }
     }
 }
 
@@ -161,7 +163,7 @@ impl SignalModel for CaCodeSource {
     fn evaluate_baseband_batch(&self, t_emit: &Array1<f64>) -> Array1<Complex32> {
         let mut out = Array1::<Complex32>::zeros(t_emit.len());
         for (i, &t) in t_emit.iter().enumerate() {
-            let dt = t - self.epoch_unix;
+            let dt = t - self.epoch_rel_s;
             let chip_phase = dt * CA_CHIP_RATE_HZ;
             // Modulo in the rust-friendly way (handle negatives correctly).
             let idx = chip_phase.floor() as i64;
