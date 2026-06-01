@@ -2,16 +2,19 @@
 //!
 //! The high-level flow:
 //!
-//! 1. Build all transmitters (signal model + trajectory + tx power).
-//! 2. Build all receivers (trajectory + clock + 1+ bands).
-//! 3. For each (receiver, band) pair, run in parallel via rayon:
-//!    - Realise the receiver's clock track Δt(t) (shared across this
-//!      receiver's bands).
-//!    - For each transmitter, evaluate its contribution at this band's
-//!      output samples via `channel::transmitter_contribution_at_receiver`.
-//!    - Sum across transmitters, add AWGN, package the output.
-//! 4. Caller writes each band's IQ to a separate `.npy` file.
+//! 1. Build all transmitters (signal model + trajectory + tx power) and
+//!    receivers (trajectory + clock + 1+ bands).
+//! 2. For each (receiver, band), generate the IQ in sequential time-chunks:
+//!    - A forward-only [`ClockStream`] (one per receiver, shared across its
+//!      bands) yields Δt(t) for the chunk with O(1) memory.
+//!    - The overlapping transmitters are evaluated **in parallel** within the
+//!      chunk, then reduced in fixed order and AWGN added.
+//!    - The chunk is pushed to a sink (in-memory or stream-to-disk).
+//!
+//! [`run_scene`] keeps everything in RAM; [`run_scene_to_dir`] streams each
+//! band to a `.iq.c64` file with memory independent of duration.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -22,20 +25,24 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 use rayon::prelude::*;
 
 use crate::channel::{
-    accumulate_transmitter_contribution, add_awgn_at_power, thermal_noise_power_w,
+    add_awgn_at_power, thermal_noise_power_w, transmitter_contribution_at_receiver,
 };
 use crate::profile;
-use crate::clock::{NodeClock, NodeClockSpec};
+use crate::clock::{ClockStream, NodeClockSpec};
 use crate::config::{
-    ReceiverBandConfig, ReceiverConfig, SceneConfig, SignalKind, TrajectoryConfig,
+    NavMode, ReceiverBandConfig, ReceiverConfig, SceneConfig, SignalKind, TrajectoryConfig,
     TransmitterConfig,
 };
 use crate::geometry::{
     kepler::CircularKeplerian, precomputed::PrecomputedTrajectory, stationary::Stationary,
     tle::TleTrajectory, AnyTrajectory, Trajectory,
 };
-use crate::output::ObserverOutput;
-use crate::signal::{bpsk::BpskFrame, ca_code::CaCodeSource, cw::ContinuousWave, SignalModel};
+use crate::output::{ObserverOutput, StreamingC64Writer};
+use crate::signal::{
+    bpsk::BpskFrame, ca_code::CaCodeSource, cw::ContinuousWave,
+    gps_nav::{lnav_bits, Ephemeris, GpsTime},
+    SignalModel,
+};
 
 const NEWTON_ITERATIONS: usize = 2;
 
@@ -44,6 +51,18 @@ const NEWTON_ITERATIONS: usize = 2;
 /// over 250 s passes) and keeps the per-source ephemeris table small
 /// (250 s × 100 Hz × 3 × 8 bytes ≈ 60 kB per source).
 const TX_TRAJECTORY_GRID_DT_S: f64 = 0.01;
+
+/// Does a transmitter's occupied spectrum intersect a receiver band's
+/// acceptance window? Both are expressed as a centre frequency and a total
+/// bandwidth; they overlap iff the gap between centres is less than the
+/// sum of the half-bandwidths. A zero-bandwidth (CW) transmitter still
+/// overlaps a band that straddles its tone.
+fn bands_overlap(
+    tx_carrier_hz: f64, tx_bandwidth_hz: f64,
+    band_lo_hz: f64, band_bandwidth_hz: f64,
+) -> bool {
+    (tx_carrier_hz - band_lo_hz).abs() <= 0.5 * (tx_bandwidth_hz + band_bandwidth_hz)
+}
 
 fn build_trajectory(cfg: &TrajectoryConfig) -> Result<Arc<dyn Trajectory>> {
     Ok(match cfg {
@@ -69,7 +88,11 @@ fn build_trajectory(cfg: &TrajectoryConfig) -> Result<Arc<dyn Trajectory>> {
     })
 }
 
-fn build_signal(cfg: &TransmitterConfig) -> Result<Arc<dyn SignalModel>> {
+fn build_signal(
+    cfg: &TransmitterConfig,
+    raw_traj: &dyn Trajectory,
+    scene: &SceneConfig,
+) -> Result<Arc<dyn SignalModel>> {
     Ok(match &cfg.kind {
         SignalKind::Cw { baseband_offset_hz } => Arc::new(ContinuousWave {
             carrier_hz: cfg.carrier_hz,
@@ -82,14 +105,60 @@ fn build_signal(cfg: &TransmitterConfig) -> Result<Arc<dyn SignalModel>> {
                 0.0, cfg.carrier_hz, &mut rng,
             ))
         }
-        SignalKind::CaCode { prn, epoch_unix } => {
-            Arc::new(CaCodeSource::new(cfg.carrier_hz, *prn, *epoch_unix))
-        }
+        SignalKind::CaCode { prn, epoch_unix, nav, nav_seed } => match nav {
+            NavMode::Off =>
+                Arc::new(CaCodeSource::new(cfg.carrier_hz, *prn, *epoch_unix)),
+            NavMode::Dummy =>
+                Arc::new(CaCodeSource::with_nav_data(
+                    cfg.carrier_hz, *prn, *epoch_unix, *nav_seed)),
+            NavMode::Full => {
+                let bits = build_lnav_bits(cfg, raw_traj, scene, *prn)?;
+                Arc::new(CaCodeSource::with_full_nav(
+                    cfg.carrier_hz, *prn, *epoch_unix, bits))
+            }
+        },
     })
 }
 
+/// Derive a satellite's ephemeris from its trajectory and build the LNAV bit
+/// stream for the whole scene. The ephemeris is exact for `circular_keplerian`
+/// (closed form) and osculating-at-`toe` for any other trajectory (e.g. TLE).
+fn build_lnav_bits(
+    cfg: &TransmitterConfig,
+    raw_traj: &dyn Trajectory,
+    scene: &SceneConfig,
+    prn: usize,
+) -> Result<Vec<i8>> {
+    let epoch = scene.scene.epoch_unix;
+    let gps = GpsTime::from_unix(epoch, scene.scene.gps_utc_offset_s);
+    if (gps.sow / 6.0).fract() != 0.0 {
+        log::warn!(
+            "scene epoch is not on a 6 s GPS boundary (sow={}); full-NAV \
+             subframe edges won't align to the TOW Z-count and SV-position \
+             time will be biased. Use an epoch_unix divisible by 6.",
+            gps.sow,
+        );
+    }
+    let eph = if let TrajectoryConfig::CircularKeplerian {
+        semi_major_axis_m, inclination_deg, raan_deg,
+        true_anomaly_deg_at_epoch, epoch_unix,
+    } = &cfg.trajectory {
+        let orbit = CircularKeplerian {
+            semi_major_axis_m: *semi_major_axis_m,
+            inclination_deg: *inclination_deg,
+            raan_deg: *raan_deg,
+            true_anomaly_deg_at_epoch: *true_anomaly_deg_at_epoch,
+            epoch_unix: *epoch_unix,
+        };
+        Ephemeris::from_circular_keplerian(&orbit, prn as u8, epoch, gps)
+    } else {
+        Ephemeris::from_trajectory(raw_traj, prn as u8, epoch, gps)
+    };
+    Ok(lnav_bits(&eph, gps, scene.scene.duration_s))
+}
+
 struct Transmitter {
-    #[allow(dead_code)] // for logging / future use
+    #[allow(dead_code)] // used for the output descriptor (contributing-tx list)
     name: String,
     signal: Arc<dyn SignalModel>,
     /// Wrapped into an `AnyTrajectory` enum-dispatch instead of
@@ -97,6 +166,9 @@ struct Transmitter {
     /// `position_ecef` can be inlined.
     trajectory: AnyTrajectory,
     tx_power_w: f64,
+    /// Occupied RF bandwidth (Hz), centred on `signal.carrier_hz()`. Used
+    /// to decide whether this transmitter falls within a receiver band.
+    bandwidth_hz: f64,
 }
 
 impl Transmitter {
@@ -123,9 +195,10 @@ impl Transmitter {
         };
         Ok(Self {
             name: cfg.name.clone(),
-            signal: build_signal(cfg)?,
+            signal: build_signal(cfg, &*raw, scene)?,
             trajectory,
             tx_power_w: 10f64.powf(cfg.tx_power_dbw / 10.0),
+            bandwidth_hz: cfg.effective_bandwidth_hz(),
         })
     }
 }
@@ -151,9 +224,135 @@ impl Receiver {
     }
 }
 
-/// Generate per-(receiver, band) IQ for an entire scene. Output naming:
-/// `<receiver_name>__<band_id>` so multi-band receivers get distinct files.
+/// Default streaming chunk size (samples). ~1 Mi-sample ≈ 16 MB of c64.
+pub const DEFAULT_CHUNK_SAMPLES: usize = 1 << 20;
+
+/// A consumer of generated IQ chunks. The chunked generator drives one of
+/// these so the in-memory ([`MemSink`]) and stream-to-disk ([`FileSink`])
+/// paths share a single code path (and therefore produce identical bytes).
+trait IqSink {
+    fn push(&mut self, chunk: &Array1<Complex32>) -> Result<()>;
+}
+
+/// Collects chunks into one contiguous in-memory buffer (for `run_scene`).
+struct MemSink {
+    buf: Vec<Complex32>,
+}
+impl MemSink {
+    fn with_capacity(n: usize) -> Self { Self { buf: Vec::with_capacity(n) } }
+}
+impl IqSink for MemSink {
+    fn push(&mut self, chunk: &Array1<Complex32>) -> Result<()> {
+        self.buf.extend_from_slice(chunk.as_slice().expect("contiguous chunk"));
+        Ok(())
+    }
+}
+
+/// Streams chunks straight to a `.iq.c64` file via [`StreamingC64Writer`].
+struct FileSink {
+    writer: StreamingC64Writer,
+}
+impl IqSink for FileSink {
+    fn push(&mut self, chunk: &Array1<Complex32>) -> Result<()> {
+        self.writer.push_chunk(chunk)
+    }
+}
+
+/// Metadata describing one generated band, returned by the chunked generator.
+struct BandMeta {
+    name: String,
+    epoch_unix: f64,
+    sample_rate_hz: f64,
+    lo_carrier_hz: f64,
+    n_samples: usize,
+    descriptor: serde_json::Value,
+}
+
+/// Lightweight result of a streamed band — no IQ retained.
+#[derive(Debug, Clone)]
+pub struct OutputManifest {
+    pub name: String,
+    pub path: PathBuf,
+    pub n_samples: usize,
+    pub descriptor: serde_json::Value,
+}
+
+/// Generate per-(receiver, band) IQ for an entire scene **in memory**. Output
+/// naming: `<receiver_name>__<band_id>`. Convenience for tests/benches and
+/// callers that want the samples in RAM; for large scenes prefer
+/// [`run_scene_to_dir`], which streams to disk with bounded memory.
 pub fn run_scene(scene: &SceneConfig, rng_seed_base: u64) -> Result<Vec<ObserverOutput>> {
+    let (transmitters, receivers, work) = prepare_scene(scene)?;
+    let mut outputs = Vec::with_capacity(work.len());
+    for (work_idx, (r_idx, b_idx)) in work.into_iter().enumerate() {
+        let receiver = &receivers[r_idx];
+        let n = (receiver.bands[b_idx].sample_rate_hz * scene.scene.duration_s).round() as usize;
+        let mut sink = MemSink::with_capacity(n);
+        let meta = generate_band(
+            receiver, r_idx, b_idx, &transmitters, scene,
+            rng_seed_base, work_idx, DEFAULT_CHUNK_SAMPLES, &mut sink,
+        )?;
+        outputs.push(ObserverOutput {
+            name: meta.name,
+            epoch_unix: meta.epoch_unix,
+            sample_rate_hz: meta.sample_rate_hz,
+            lo_carrier_hz: meta.lo_carrier_hz,
+            iq: Array1::from(sink.buf),
+            descriptor: meta.descriptor,
+        });
+    }
+    Ok(outputs)
+}
+
+/// Generate a scene **streaming to disk**: each band's IQ is written
+/// incrementally to `<dir>/<name>.iq.c64` (+ JSON sidecar) in `chunk_samples`
+/// chunks, so peak memory is independent of scene duration. Within each chunk
+/// the (expensive) per-transmitter work is parallelised across `n_threads`
+/// (0 ⇒ all cores); chunks stay sequential to keep the clock walk and noise
+/// stream — and hence the output — bit-identical regardless of chunk size.
+pub fn run_scene_to_dir(
+    scene: &SceneConfig,
+    rng_seed_base: u64,
+    dir: &Path,
+    chunk_samples: usize,
+    n_threads: usize,
+) -> Result<Vec<OutputManifest>> {
+    let chunk_samples = chunk_samples.max(1);
+    let (transmitters, receivers, work) = prepare_scene(scene)?;
+
+    let pool = {
+        let mut b = rayon::ThreadPoolBuilder::new();
+        if n_threads > 0 { b = b.num_threads(n_threads); }
+        b.build()?
+    };
+
+    pool.install(|| {
+        let mut manifests = Vec::with_capacity(work.len());
+        for (work_idx, (r_idx, b_idx)) in work.into_iter().enumerate() {
+            let receiver = &receivers[r_idx];
+            let name = format!("{}__{}", receiver.name, receiver.bands[b_idx].band_id);
+            let mut sink = FileSink { writer: StreamingC64Writer::create(dir, &name)? };
+            let meta = generate_band(
+                receiver, r_idx, b_idx, &transmitters, scene,
+                rng_seed_base, work_idx, chunk_samples, &mut sink,
+            )?;
+            sink.writer.finalize(
+                meta.epoch_unix, meta.sample_rate_hz, meta.lo_carrier_hz, &meta.descriptor,
+            )?;
+            manifests.push(OutputManifest {
+                name: meta.name,
+                path: dir.join(format!("{name}.iq.c64")),
+                n_samples: meta.n_samples,
+                descriptor: meta.descriptor,
+            });
+        }
+        Ok(manifests)
+    })
+}
+
+/// Build transmitters + receivers and enumerate (receiver, band) work items.
+type PreparedScene = (Vec<Transmitter>, Vec<Receiver>, Vec<(usize, usize)>);
+fn prepare_scene(scene: &SceneConfig) -> Result<PreparedScene> {
     let transmitters: Vec<Transmitter> = scene
         .transmitters
         .iter()
@@ -164,80 +363,200 @@ pub fn run_scene(scene: &SceneConfig, rng_seed_base: u64) -> Result<Vec<Observer
         .iter()
         .map(Receiver::from_config)
         .collect::<Result<Vec<_>>>()?;
-
-    // Enumerate all (receiver, band) work items.
     let mut work: Vec<(usize, usize)> = Vec::new();
     for (r_idx, rx) in receivers.iter().enumerate() {
         for (b_idx, _) in rx.bands.iter().enumerate() {
             work.push((r_idx, b_idx));
         }
     }
-
-    let outputs: Result<Vec<ObserverOutput>> = work
-        .par_iter()
-        .enumerate()
-        .map(|(work_idx, &(r_idx, b_idx))| {
-            let mut rng = Xoshiro256PlusPlus::seed_from_u64(
-                rng_seed_base.wrapping_add(work_idx as u64)
-            );
-            generate_one_band(&receivers[r_idx], b_idx, &transmitters, scene, &mut rng)
-        })
-        .collect();
-    outputs
+    Ok((transmitters, receivers, work))
 }
 
-fn generate_one_band(
+/// Clock RNG is seeded per *receiver* (shared by all its bands, so they are
+/// mutually coherent); noise RNG is seeded per *(receiver, band)*. Keeping them
+/// in separate sub-streams makes the result independent of chunking and of the
+/// transmitter count.
+fn clock_seed(base: u64, r_idx: usize) -> u64 {
+    base.wrapping_add(0xC10C_0000_0000_0000).wrapping_add(r_idx as u64)
+}
+fn noise_seed(base: u64, work_idx: usize) -> u64 {
+    base.wrapping_add(work_idx as u64)
+}
+
+/// Chunked, transmitter-parallel generation of one band, driving `sink`.
+fn generate_band(
     receiver: &Receiver,
+    r_idx: usize,
     band_idx: usize,
     transmitters: &[Transmitter],
     scene: &SceneConfig,
-    rng: &mut Xoshiro256PlusPlus,
-) -> Result<ObserverOutput> {
+    rng_seed_base: u64,
+    work_idx: usize,
+    chunk_samples: usize,
+    sink: &mut dyn IqSink,
+) -> Result<BandMeta> {
     let band = &receiver.bands[band_idx];
-    let n = (band.sample_rate_hz * scene.scene.duration_s).round() as usize;
-    let t_local = Array1::from_iter(
-        (0..n).map(|i| scene.scene.epoch_unix + i as f64 / band.sample_rate_hz)
+    let epoch = scene.scene.epoch_unix;
+    let fs = band.sample_rate_hz;
+    let n = (fs * scene.scene.duration_s).round() as usize;
+    let lo = band.lo_carrier_hz;
+    let band_bandwidth_hz = band.effective_bandwidth_hz();
+
+    // One forward-only clock per receiver, realised on the receiver's highest
+    // band rate so every band references the identical ε(t) walk (the high-rate
+    // band lands on the grid exactly; lower-rate bands interpolate the same
+    // walk). Seeded per receiver ⇒ coherent across bands.
+    let master_rate = receiver.bands.iter()
+        .map(|b| b.sample_rate_hz)
+        .fold(0.0_f64, f64::max);
+    let mut clock = ClockStream::new(
+        receiver.clock_spec, epoch, master_rate,
+        Xoshiro256PlusPlus::seed_from_u64(clock_seed(rng_seed_base, r_idx)),
+    );
+    let mut noise_rng = Xoshiro256PlusPlus::seed_from_u64(noise_seed(rng_seed_base, work_idx));
+    let noise_power_w = band.noise_power_w.unwrap_or_else(||
+        thermal_noise_power_w(band.noise_temperature_k, fs)
     );
 
-    // The receiver's clock realisation. Master rate = this band's sample rate.
-    // (For tighter inter-band coherence in real DGSN hardware, all bands
-    // should pull from the same underlying clock track; we approximate by
-    // re-realising at each band's rate. The deterministic terms — c, m·t —
-    // are identical between bands; only the white-FM ε(t) realisation
-    // differs in its sample grid. For Allan deviations < 1e-9 this gap is
-    // numerically negligible.)
-    let clock = profile::time("clock:realise", || NodeClock::new(
-        receiver.clock_spec, scene.scene.epoch_unix,
-        band.sample_rate_hz, scene.scene.duration_s, rng,
-    ));
-    let delta_t = profile::time("clock:interpolate", || clock.time_offset_at(&t_local));
-    let t_utc = &t_local - &delta_t;
-    let receiver_position = profile::time("receiver:position_batch",
-        || receiver.trajectory.position_ecef_batch(&t_utc));
-
-    let mut accumulator = Array1::<Complex32>::zeros(n);
-    for tx in transmitters {
-        profile::time("tx_contribution:total", || {
-            accumulate_transmitter_contribution(
-                &mut accumulator,
-                &*tx.signal, &tx.trajectory,
-                &receiver_position, &t_local, &t_utc, &delta_t,
-                band.lo_carrier_hz, tx.tx_power_w, NEWTON_ITERATIONS,
-            );
-        });
+    // Band-overlap gate, evaluated once: which transmitters land in this band.
+    // Skipping the rest stops a far-out-of-band emitter (e.g. a 437 MHz beacon)
+    // aliasing into the band. Partial overlap is admitted unfiltered (no
+    // anti-alias) — documented limitation.
+    let mut active: Vec<usize> = Vec::new();
+    let mut contributing: Vec<serde_json::Value> = Vec::new();
+    for (i, tx) in transmitters.iter().enumerate() {
+        if bands_overlap(tx.signal.carrier_hz(), tx.bandwidth_hz, lo, band_bandwidth_hz) {
+            active.push(i);
+            contributing.push(transmitter_descriptor(&scene.transmitters[i]));
+        }
     }
 
-    let noise_power_w = band.noise_power_w.unwrap_or_else(||
-        thermal_noise_power_w(band.noise_temperature_k, band.sample_rate_hz)
-    );
-    profile::time("noise:awgn", || add_awgn_at_power(&mut accumulator, noise_power_w, rng));
+    // Sequential chunk loop (clock walk + noise stream + file order); the
+    // expensive per-transmitter work is parallelised within each chunk.
+    let mut i0 = 0usize;
+    while i0 < n {
+        let i1 = (i0 + chunk_samples).min(n);
+        let clen = i1 - i0;
 
-    let composite_name = format!("{}__{}", receiver.name, band.band_id);
-    Ok(ObserverOutput {
-        name: composite_name,
-        epoch_unix: scene.scene.epoch_unix,
-        sample_rate_hz: band.sample_rate_hz,
-        lo_carrier_hz: band.lo_carrier_hz,
-        iq: accumulator,
+        // Absolute sample times from the GLOBAL index (never accumulate time).
+        let t_local = Array1::from_iter((i0..i1).map(|i| epoch + i as f64 / fs));
+        let delta_t = profile::time("clock:stream", || {
+            let mut d = Array1::<f64>::zeros(clen);
+            for (j, &t) in t_local.iter().enumerate() {
+                d[j] = clock.delta_t_at(t);
+            }
+            d
+        });
+        let t_utc = &t_local - &delta_t;
+        let receiver_position = profile::time("receiver:position_batch",
+            || receiver.trajectory.position_ecef_batch(&t_utc));
+
+        // Parallel over the overlapping transmitters → one contribution buffer
+        // each; reduce in fixed transmitter order (deterministic f32 sum).
+        let mut acc = profile::time("tx_contribution:total", || {
+            let contributions: Vec<Array1<Complex32>> = active
+                .par_iter()
+                .map(|&i| {
+                    let tx = &transmitters[i];
+                    transmitter_contribution_at_receiver(
+                        &*tx.signal, &tx.trajectory,
+                        &receiver_position, &t_local, &t_utc, &delta_t,
+                        lo, tx.tx_power_w, NEWTON_ITERATIONS,
+                    )
+                })
+                .collect();
+            let mut acc = Array1::<Complex32>::zeros(clen);
+            for c in &contributions {
+                acc += c;
+            }
+            acc
+        });
+
+        profile::time("noise:awgn", || add_awgn_at_power(&mut acc, noise_power_w, &mut noise_rng));
+        sink.push(&acc)?;
+        i0 = i1;
+    }
+
+    let descriptor = serde_json::json!({
+        "receiver": receiver.name,
+        "band_id": band.band_id,
+        "duration_s": scene.scene.duration_s,
+        "band": {
+            "lo_carrier_hz": lo,
+            "sample_rate_hz": fs,
+            "bandwidth_hz": band_bandwidth_hz,
+            "noise_temperature_k": band.noise_temperature_k,
+            "noise_power_w": noise_power_w,
+        },
+        "contributing_transmitters": contributing,
+        "scene_config": serde_json::to_value(scene).unwrap_or(serde_json::Value::Null),
+    });
+
+    Ok(BandMeta {
+        name: format!("{}__{}", receiver.name, band.band_id),
+        epoch_unix: epoch,
+        sample_rate_hz: fs,
+        lo_carrier_hz: lo,
+        n_samples: n,
+        descriptor,
     })
+}
+
+/// Per-transmitter detail captured in the output descriptor: enough to know
+/// exactly which emitters (and, for GNSS, which PRNs) landed in a band.
+fn transmitter_descriptor(cfg: &TransmitterConfig) -> serde_json::Value {
+    let mut v = serde_json::json!({
+        "name": cfg.name,
+        "kind": cfg.kind.kind_name(),
+        "carrier_hz": cfg.carrier_hz,
+        "tx_power_dbw": cfg.tx_power_dbw,
+        "bandwidth_hz": cfg.effective_bandwidth_hz(),
+        "trajectory_kind": cfg.trajectory.kind_name(),
+    });
+    if let SignalKind::CaCode { prn, nav, .. } = &cfg.kind {
+        v["prn"] = serde_json::json!(prn);
+        v["nav"] = serde_json::json!(format!("{nav:?}").to_lowercase());
+    }
+    v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bands_overlap;
+
+    // GNSS L1 band: 1575.42 MHz LO, 2.048 MHz acceptance window.
+    const GNSS_LO: f64 = 1_575_420_000.0;
+    const GNSS_BW: f64 = 2_048_000.0;
+
+    #[test]
+    fn far_out_of_band_beacon_is_excluded() {
+        // The 437 MHz ISS UHF beacon must NOT contribute to the GNSS band —
+        // this is the aliasing bug the gate fixes.
+        let beacon_bw = 2.0 * 9600.0; // BPSK @ 9.6 kbps
+        assert!(!bands_overlap(437_000_000.0, beacon_bw, GNSS_LO, GNSS_BW));
+    }
+
+    #[test]
+    fn co_carrier_ca_code_is_included() {
+        // A C/A transmitter at the L1 carrier overlaps the GNSS band.
+        let ca_bw = 2.0 * 1_023_000.0;
+        assert!(bands_overlap(GNSS_LO, ca_bw, GNSS_LO, GNSS_BW));
+    }
+
+    #[test]
+    fn edge_overlap_is_inclusive() {
+        // A tone sitting exactly on the band edge counts as overlapping.
+        let edge = GNSS_LO + GNSS_BW / 2.0;
+        assert!(bands_overlap(edge, 0.0, GNSS_LO, GNSS_BW));
+        // Just beyond the edge does not.
+        assert!(!bands_overlap(edge + 1.0, 0.0, GNSS_LO, GNSS_BW));
+    }
+
+    #[test]
+    fn wideband_tx_can_reach_a_nearby_band() {
+        // A wide emission whose skirts reach into the band overlaps even
+        // if its centre is outside the band's own bandwidth.
+        let centre = GNSS_LO + 5_000_000.0; // 5 MHz away
+        assert!(bands_overlap(centre, 20_000_000.0, GNSS_LO, GNSS_BW));
+    }
 }

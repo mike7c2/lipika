@@ -1,17 +1,17 @@
 [package]
-name = "dgsn-iq-gen"
+name = "lipika"
 version = "0.1.0"
 edition = "2024"
-description = "Multi-source, multi-observer IQ scene simulator for DGSN and adjacent SDR work."
+description = "Multi-source, multi-observer IQ scene simulator for distributed-receiver and adjacent SDR work."
 license = "MIT"
 readme = "README.md"
 
 [[bin]]
-name = "dgsn-iq-gen"
-path = "src/bin/dgsn_iq_gen.rs"
+name = "lipika"
+path = "src/bin/lipika.rs"
 
 [lib]
-name = "dgsn_iq_gen"
+name = "lipika"
 path = "src/lib.rs"
 
 [dependencies]
@@ -45,14 +45,6 @@ env_logger = "0.11"
 
 # Datetime helpers (TLE epoch parsing).
 chrono = "0.4"
-
-# GPU backend (wgpu/WGSL) was prototyped and abandoned — see
-# src/backend/mod.rs for the precision reasoning. Keeping these
-# commented out so the trail is visible if we revisit on datacenter GPUs.
-# wgpu = { version = "22.1", optional = true }
-# bytemuck = { version = "1.18", features = ["derive"], optional = true }
-# pollster = { version = "0.3", optional = true }
-# futures-intrusive = { version = "0.5", optional = true }
 
 [features]
 default = []

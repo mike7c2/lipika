@@ -24,13 +24,11 @@ mod tests {
     use approx::assert_relative_eq;
 
     #[test]
-    fn glasgow_matches_python_reference() {
-        // Same numbers as our Python `geodetic_to_ecef(55.86, -4.25, 10.0)`.
+    fn glasgow_matches_reference() {
+        // Cross-checked against a reference WGS-84 geodetic→ECEF implementation:
+        //   geodetic_to_ecef(55.86, -4.25, 10.0)
+        //   -> [3577894.5228608, -265883.49155448, 5255718.21468305]
         let p = geodetic_to_ecef(55.86, -4.25, 10.0);
-        // Reference computed directly via the Python pipeline's geodetic_to_ecef:
-        //   >>> from dgsn_diversity.algos.positioning import geodetic_to_ecef
-        //   >>> geodetic_to_ecef(55.86, -4.25, 10.0)
-        //   array([3577894.5228608, -265883.49155448, 5255718.21468305])
         assert_relative_eq!(p[0],  3_577_894.5228608, max_relative = 1e-9);
         assert_relative_eq!(p[1],   -265_883.49155448, max_relative = 1e-9);
         assert_relative_eq!(p[2],  5_255_718.21468305, max_relative = 1e-9);

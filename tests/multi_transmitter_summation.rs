@@ -8,8 +8,8 @@
 //! re-realised per transmitter, the band's effective noise floor would
 //! silently scale with transmitter count.
 
-use dgsn_iq_gen::config::SceneConfig;
-use dgsn_iq_gen::pipeline::run_scene;
+use lipika::config::SceneConfig;
+use lipika::pipeline::run_scene;
 
 const TOML_NO_TX: &str = r#"
 [scene]

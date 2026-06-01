@@ -1,14 +1,14 @@
-//! CLI entry point. Reads a TOML scene description, generates per-observer
-//! IQ, writes `.npy` + JSON sidecar files into the output directory.
+//! CLI entry point. Reads a TOML scene description and streams per-observer
+//! IQ (raw `complex64` + JSON sidecar) into the output directory.
 
 use std::path::PathBuf;
 
 use clap::Parser;
-use dgsn_iq_gen::{config::SceneConfig, pipeline, profile};
+use lipika::{config::SceneConfig, pipeline, profile};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "dgsn-iq-gen",
+    name = "lipika",
     version,
     about = "Multi-source, multi-observer IQ scene simulator",
 )]
@@ -16,7 +16,7 @@ struct Cli {
     /// Scene description file (TOML).
     #[arg(short, long)]
     config: PathBuf,
-    /// Output directory; per-observer .npy files written here.
+    /// Output directory; per-observer-band .iq.c64 files written here.
     #[arg(short, long)]
     output: PathBuf,
     /// Seed for the pipeline's per-observer RNG derivation.
@@ -25,6 +25,13 @@ struct Cli {
     /// Backend: cpu (default) or gpu (requires --features gpu at build time).
     #[arg(long, default_value = "cpu")]
     backend: String,
+    /// Streaming chunk size in samples. Peak memory ≈ chunk × (#in-band
+    /// transmitters + few) × 8 B, flat in scene duration.
+    #[arg(long, default_value_t = lipika::pipeline::DEFAULT_CHUNK_SAMPLES)]
+    chunk_samples: usize,
+    /// Worker threads for the per-chunk transmitter fan-out (0 = all cores).
+    #[arg(long, default_value_t = 0usize)]
+    threads: usize,
     /// Print a per-section CPU profile at the end of the run.
     #[arg(long, default_value_t = false)]
     profile: bool,
@@ -49,15 +56,20 @@ fn main() -> anyhow::Result<()> {
         scene.transmitters.len(), scene.receivers.len(), total_bands,
     );
 
+    log::info!(
+        "streaming to {} (chunk={} samples, threads={})",
+        cli.output.display(), cli.chunk_samples,
+        if cli.threads == 0 { "all".to_string() } else { cli.threads.to_string() },
+    );
     let start = std::time::Instant::now();
-    let outputs = pipeline::run_scene(&scene, cli.seed)?;
+    let manifests = pipeline::run_scene_to_dir(
+        &scene, cli.seed, &cli.output, cli.chunk_samples, cli.threads,
+    )?;
     let elapsed = start.elapsed();
     log::info!("pipeline finished in {:.2?}", elapsed);
 
-    log::info!("writing {} observer outputs to {}", outputs.len(), cli.output.display());
-    for output in &outputs {
-        output.write_raw_with_sidecar(&cli.output)?;
-        log::info!("  wrote {} ({} samples)", output.name, output.iq.len());
+    for m in &manifests {
+        log::info!("  wrote {} ({} samples) -> {}", m.name, m.n_samples, m.path.display());
     }
 
     if cli.profile {

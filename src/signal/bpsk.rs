@@ -1,5 +1,5 @@
 //! BPSK source: deterministic bit pattern (sync word + payload) modulated
-//! at a fixed bit rate. Used for the DGSN UHF observation channel.
+//! at a fixed bit rate.
 
 use ndarray::Array1;
 use num_complex::Complex32;

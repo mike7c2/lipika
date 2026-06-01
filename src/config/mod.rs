@@ -3,16 +3,13 @@
 //! Two top-level kinds of entry: `[[transmitter]]` and `[[receiver]]`.
 //!
 //! - A transmitter emits one signal at one carrier from one trajectory.
-//!   Two emissions from the same physical platform (e.g., an ISS UHF
-//!   beacon + an ISS S-band beacon) are modelled as two transmitters
-//!   that happen to share a trajectory.
+//!   Two emissions from the same platform are modelled as two transmitters
+//!   sharing a trajectory.
 //!
 //! - A receiver has one trajectory + one clock + 1+ `[[receiver.band]]`
-//!   entries. Each band is one RF chain (LO + sample rate + per-source
-//!   SNR). All bands at one receiver share the receiver's clock, which
-//!   models the real-hardware property that one OCXO drives both the
-//!   UHF observation and GNSS L1 RF chains coherently. The clock-noise
-//!   contribution to band k's carrier phase is scaled by f_lo_k.
+//!   entries. Each band has its own LO, sample rate and noise; all bands
+//!   share the receiver's clock, which lets one model multi-channel coherent
+//!   receivers.
 //!
 //! ```toml
 //! [scene]
@@ -39,13 +36,13 @@
 //! band_id = "uhf_obs"
 //! lo_carrier_hz = 437_000_000.0
 //! sample_rate_hz = 48_000.0
-//! snr_db_per_source = 10.0
+//! noise_temperature_k = 290.0
 //!
 //! [[receiver.band]]
 //! band_id = "gnss_l1"
 //! lo_carrier_hz = 1_575_420_000.0
-//! sample_rate_hz = 1_500_000.0
-//! snr_db_per_source = -20.0
+//! sample_rate_hz = 2_048_000.0
+//! noise_temperature_k = 290.0
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -65,7 +62,13 @@ pub struct SceneConfig {
 pub struct SceneMeta {
     pub epoch_unix: f64,
     pub duration_s: f64,
+    /// GPS−UTC offset in seconds (leap seconds; 18 for the current era). Used
+    /// to map `epoch_unix` to GPS week/seconds-of-week for full LNAV.
+    #[serde(default = "default_gps_utc_offset")]
+    pub gps_utc_offset_s: f64,
 }
+
+fn default_gps_utc_offset() -> f64 { 18.0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransmitterConfig {
@@ -76,9 +79,26 @@ pub struct TransmitterConfig {
     /// produce a receiver-side amplitude.
     #[serde(default)]
     pub tx_power_dbw: f64,
+    /// Occupied RF bandwidth of the emission (Hz), used to decide which
+    /// receiver bands this transmitter contributes to. When omitted it
+    /// falls back to a per-signal-kind estimate (see
+    /// [`SignalKind::default_bandwidth_hz`]). A transmitter whose
+    /// `[carrier ± bandwidth/2]` does not overlap a band's
+    /// `[lo ± band_bandwidth/2]` is skipped for that band — this is what
+    /// stops an out-of-band emitter aliasing into the band.
+    #[serde(default)]
+    pub bandwidth_hz: Option<f64>,
     pub trajectory: TrajectoryConfig,
     #[serde(flatten)]
     pub kind: SignalKind,
+}
+
+impl TransmitterConfig {
+    /// Resolved occupied bandwidth: the explicit `bandwidth_hz` if set,
+    /// else the per-signal-kind default.
+    pub fn effective_bandwidth_hz(&self) -> f64 {
+        self.bandwidth_hz.unwrap_or_else(|| self.kind.default_bandwidth_hz())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,7 +106,57 @@ pub struct TransmitterConfig {
 pub enum SignalKind {
     Cw { baseband_offset_hz: f64 },
     Bpsk { bit_rate_bps: f64, payload_bits: usize, payload_seed: u64, sync_word: Vec<i8> },
-    CaCode { prn: usize, epoch_unix: f64 },
+    CaCode {
+        prn: usize,
+        epoch_unix: f64,
+        /// Navigation-data mode (default `dummy`). See [`NavMode`].
+        #[serde(default)]
+        nav: NavMode,
+        /// Seed for the deterministic `dummy` NAV payload (folded with the PRN).
+        #[serde(default)]
+        nav_seed: u64,
+    },
+}
+
+/// What navigation data, if any, rides on a C/A code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NavMode {
+    /// Pure code, no data.
+    Off,
+    /// Preamble + pseudo-random payload: enough for acquisition/tracking lock,
+    /// but fails parity (no position fix). The default.
+    #[default]
+    Dummy,
+    /// Fully-formed LNAV (valid frames + ephemeris derived from the
+    /// trajectory) so a receiver can compute a position fix.
+    Full,
+}
+
+impl SignalKind {
+    /// Stable short identifier of the signal variant (matches the TOML
+    /// `kind` tag), for descriptors and logging.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            SignalKind::Cw { .. } => "cw",
+            SignalKind::Bpsk { .. } => "bpsk",
+            SignalKind::CaCode { .. } => "ca_code",
+        }
+    }
+
+    /// Estimated occupied (null-to-null main-lobe) bandwidth in Hz, used
+    /// as the fallback when a transmitter does not declare `bandwidth_hz`.
+    ///
+    /// - CW: a pure tone — effectively zero bandwidth.
+    /// - BPSK: `2 × bit_rate` (null-to-null main lobe of the sinc).
+    /// - C/A: `2 × 1.023 MHz ≈ 2.046 MHz` (the 1.023 Mcps chipping rate).
+    pub fn default_bandwidth_hz(&self) -> f64 {
+        match self {
+            SignalKind::Cw { .. } => 0.0,
+            SignalKind::Bpsk { bit_rate_bps, .. } => 2.0 * bit_rate_bps,
+            SignalKind::CaCode { .. } => 2.0 * crate::signal::ca_code::CA_CHIP_RATE_HZ,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +185,20 @@ pub struct ReceiverBandConfig {
     /// to model a non-thermal noise floor (RFI, ADC quantisation, etc.).
     #[serde(default)]
     pub noise_power_w: Option<f64>,
+    /// Acceptance bandwidth of this band (Hz), centred on `lo_carrier_hz`,
+    /// used for the transmitter-overlap decision. Defaults to the sample
+    /// rate (the digitised Nyquist span). Note this gates *which*
+    /// transmitters contribute; it is not an applied anti-alias filter.
+    #[serde(default)]
+    pub bandwidth_hz: Option<f64>,
+}
+
+impl ReceiverBandConfig {
+    /// Resolved acceptance bandwidth: explicit `bandwidth_hz` if set, else
+    /// the sample rate (Nyquist span of the digitised band).
+    pub fn effective_bandwidth_hz(&self) -> f64 {
+        self.bandwidth_hz.unwrap_or(self.sample_rate_hz)
+    }
 }
 
 fn default_noise_temp_k() -> f64 { 290.0 }

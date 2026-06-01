@@ -1,4 +1,4 @@
-//! `dgsn-iq-gen` — multi-source, multi-observer IQ scene simulator.
+//! `lipika` — multi-source, multi-observer IQ scene simulator.
 //!
 //! The library exposes the building blocks the CLI binary orchestrates:
 //!
@@ -9,11 +9,11 @@
 //!   offset (ppm scale), and white-FM phase walk.
 //! - [`channel`] — free-space propagation (delay + Doppler via
 //!   time-domain resampling, not frequency shift), AWGN.
-//! - [`backend`] — execution backend: CPU (rayon-parallel across observers).
-//!   A wgpu/WGSL GPU backend was prototyped and abandoned; see
-//!   `backend::mod` for the precision analysis.
+//! - [`backend`] — execution backend: CPU (rayon-parallel across the
+//!   transmitters within each time chunk). A wgpu/WGSL GPU backend was
+//!   prototyped and abandoned; see `backend::mod` for the precision analysis.
 //! - [`config`] — TOML scene description (serde structs).
-//! - [`output`] — IQ file writers (NumPy `.npy`, SigMF).
+//! - [`output`] — IQ file writers (raw little-endian `complex64` + JSON sidecar).
 //!
 //! ## Architectural principle: time-domain resampling for Doppler
 //!

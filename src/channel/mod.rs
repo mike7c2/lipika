@@ -1,12 +1,9 @@
 //! Propagation channel: emission-time lookup + delay + (optional) AWGN.
 //!
-//! The core innovation vs frequency-shift simulators: we compute each
-//! observer sample by solving for the source's emission time `t_emit` such
-//! that the signal reaches the observer's antenna exactly at the UTC
-//! instant the observer's sample is taken, and then look up the source
-//! baseband at `t_emit`. The propagation delay's per-sample variation
-//! *is* the Doppler — it falls out automatically, including code-rate
-//! Doppler and sample-rate skew effects.
+//! Each observer sample is computed by solving for the source emission time
+//! `t_emit` whose signal arrives at the sample's UTC instant, then evaluating
+//! the source baseband there. Doppler (including code-rate Doppler and
+//! sample-rate skew) is the per-sample variation of the propagation delay.
 
 use ndarray::{Array1, Array2};
 use num_complex::Complex32;
@@ -18,15 +15,13 @@ use crate::profile;
 use crate::signal::SignalModel;
 use crate::SPEED_OF_LIGHT_M_S;
 
-pub mod free_space;
-
 /// Solve for emission times `t_emit` such that
 /// `t_emit + |P_src(t_emit) − P_obs(t_utc)| / c = t_utc`
 /// for each entry of `t_utc`. Returns also the per-sample slant range (m).
 ///
 /// Uses fixed-point iteration from an initial guess of `t_utc − 70 ms`
-/// (median LEO/GPS one-way delay). Two iterations bring us to ns precision
-/// across the LEO–GPS altitude range; three for paranoia.
+/// (median LEO/GPS one-way delay); two iterations reach ns precision across
+/// the LEO–GPS altitude range.
 /// Generic monomorphised solver — each concrete `T: Trajectory` gets its
 /// own compiled copy with `T::position_ecef` inlined into the Newton
 /// inner loop. Callers usually go through the [`AnyTrajectory`]-dispatch
@@ -141,8 +136,7 @@ pub fn accumulate_transmitter_contribution(
     //
     // We allow f_lo_obs ≠ f_src to keep the IF-tuning case open.
     let tau = std::f64::consts::TAU;
-    // Hoist loop invariants. rustc would do most of these but spelling
-    // them out keeps intent obvious for the next reader.
+    // Loop invariants, hoisted.
     let neg_tau_src = -tau * src_carrier;
     let tau_if = tau * (src_carrier - receiver_lo_carrier_hz);
     // λ/(4π) · √P_tx — constant factor of the FSPL amplitude term;
@@ -227,19 +221,4 @@ pub fn add_awgn_at_power(
         v.re += normal.sample(rng);
         v.im += normal.sample(rng);
     }
-}
-
-/// Compatibility wrapper for callers that want "noise calibrated to a
-/// declared per-source SNR against a 1 W reference". Kept so existing
-/// tests don't break, but new scenes should specify a noise temperature
-/// or noise floor explicitly.
-#[deprecated(note = "specify receiver noise via thermal_noise_power_w + add_awgn_at_power; absolute noise model is physically meaningful")]
-pub fn add_awgn(
-    iq: &mut Array1<Complex32>,
-    snr_db: f64,
-    _expected_signal_power: f64,
-    rng: &mut impl Rng,
-) {
-    let noise_power = 1.0 / 10f64.powf(snr_db / 10.0);
-    add_awgn_at_power(iq, noise_power, rng);
 }

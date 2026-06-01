@@ -1,14 +1,14 @@
-# DGSN dual-band scene: a UHF beacon from the ISS + 6 synthetic GPS-like
-# transmitters at L1, observed by 2 ground receivers each running BOTH a
-# UHF observation band AND a GNSS L1 band off the same OCXO clock.
+# Dual-band scene: a UHF beacon from the ISS + 6 synthetic GPS-like
+# transmitters at L1, observed by a ground receiver running BOTH a UHF
+# observation band AND a GNSS L1 band off the same OCXO clock.
 #
 # Demonstrates the multi-band-per-receiver architecture: each receiver's
 # clock noise is realised once and used coherently across both bands,
-# matching real DGSN hardware where one OCXO drives multiple RF chains.
+# matching real hardware where one OCXO drives multiple RF chains.
 
 [scene]
 epoch_unix = 1717260840.0
-duration_s = 30.0   # short for fast iteration; bump to 250 for full DGSN
+duration_s = 120.0   # short for fast iteration; raise for a full pass
 
 # ---------- transmitters ----------
 
@@ -27,7 +27,7 @@ trajectory = { kind = "tle", line1 = "1 25544U 98067A   24001.50000000  .0001000
 [[transmitter]]
 name = "gps_prn01"
 carrier_hz = 1_575_420_000.0
-tx_power_dbw = 13.0  # ~20 W EIRP — typical GPS spec
+tx_power_dbw = 27.0  # ~500 W EIRP — delivers ~-158.5 dBW at ground (C/N0 ~45 dB-Hz)
 kind = "ca_code"
 prn = 1
 epoch_unix = 1717260840.0
@@ -36,7 +36,7 @@ trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, in
 [[transmitter]]
 name = "gps_prn05"
 carrier_hz = 1_575_420_000.0
-tx_power_dbw = 13.0
+tx_power_dbw = 27.0  # ~500 W EIRP — delivers ~-158.5 dBW at ground (C/N0 ~45 dB-Hz)
 kind = "ca_code"
 prn = 5
 epoch_unix = 1717260840.0
@@ -45,7 +45,7 @@ trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, in
 [[transmitter]]
 name = "gps_prn10"
 carrier_hz = 1_575_420_000.0
-tx_power_dbw = 13.0
+tx_power_dbw = 27.0  # ~500 W EIRP — delivers ~-158.5 dBW at ground (C/N0 ~45 dB-Hz)
 kind = "ca_code"
 prn = 10
 epoch_unix = 1717260840.0
@@ -54,7 +54,7 @@ trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, in
 [[transmitter]]
 name = "gps_prn14"
 carrier_hz = 1_575_420_000.0
-tx_power_dbw = 13.0
+tx_power_dbw = 27.0  # ~500 W EIRP — delivers ~-158.5 dBW at ground (C/N0 ~45 dB-Hz)
 kind = "ca_code"
 prn = 14
 epoch_unix = 1717260840.0
@@ -63,7 +63,7 @@ trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, in
 [[transmitter]]
 name = "gps_prn17"
 carrier_hz = 1_575_420_000.0
-tx_power_dbw = 13.0
+tx_power_dbw = 27.0  # ~500 W EIRP — delivers ~-158.5 dBW at ground (C/N0 ~45 dB-Hz)
 kind = "ca_code"
 prn = 17
 epoch_unix = 1717260840.0
@@ -72,7 +72,7 @@ trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, in
 [[transmitter]]
 name = "gps_prn21"
 carrier_hz = 1_575_420_000.0
-tx_power_dbw = 13.0
+tx_power_dbw = 27.0  # ~500 W EIRP — delivers ~-158.5 dBW at ground (C/N0 ~45 dB-Hz)
 kind = "ca_code"
 prn = 21
 epoch_unix = 1717260840.0
@@ -92,13 +92,13 @@ noise_temperature_k = 290.0
 [[receiver.band]]
 band_id = "gnss_l1"
 lo_carrier_hz = 1_575_420_000.0
-sample_rate_hz = 1_500_000.0
+sample_rate_hz = 2_048_000.0
 noise_temperature_k = 290.0
 
 [[receiver]]
 name = "london"
-trajectory = { kind = "stationary_geodetic", lat_deg = 51.51, lon_deg = -0.13, h_m = 10.0 }
-clock = { allan_deviation_1s = 1e-11, frequency_offset_y0 = -0.3e-6 }
+trajectory = { kind = "stationary_geodetic", lat_deg = 51.509865, lon_deg = -0.118092, h_m = 10.0 }
+clock = { allan_deviation_1s = 1e-11, frequency_offset_y0 = 0.5e-6 }
 [[receiver.band]]
 band_id = "uhf_obs"
 lo_carrier_hz = 437_000_000.0
@@ -107,5 +107,6 @@ noise_temperature_k = 290.0
 [[receiver.band]]
 band_id = "gnss_l1"
 lo_carrier_hz = 1_575_420_000.0
-sample_rate_hz = 1_500_000.0
+sample_rate_hz = 2_048_000.0
 noise_temperature_k = 290.0
+

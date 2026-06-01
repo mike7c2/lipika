@@ -1,0 +1,88 @@
+# Synthetic GPS scene that yields a real position fix in GNSS-SDR.
+#
+# Six circular-Keplerian satellites at GPS altitude, placed so all are well
+# above the horizon over Glasgow with good azimuth spread (low GDOP). Each
+# carries FULL LNAV (nav = "full"): valid frames + an ephemeris derived in
+# closed form from the orbit, so the SV positions the receiver computes match
+# the geometry the simulator flies. The fix should resolve at the true receiver
+# location (residual ~ metres, from f32 IQ + quantisation only).
+#
+# epoch_unix is divisible by 6 so subframe edges land on the GPS 6 s Z-count.
+
+[scene]
+epoch_unix = 1717260840.0
+duration_s = 50.0          # enough to decode subframes 1-3 and fix
+
+# ---------- GPS L1 constellation (a = 26 578 137 m, inclination 55°) ----------
+
+[[transmitter]]
+name = "gps_prn02"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 2
+epoch_unix = 1717260840.0
+nav = "full"
+trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, inclination_deg = 55.0, raan_deg = 270.0, true_anomaly_deg_at_epoch = 90.0, epoch_unix = 1717260840.0 }
+
+[[transmitter]]
+name = "gps_prn06"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 6
+epoch_unix = 1717260840.0
+nav = "full"
+trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, inclination_deg = 55.0, raan_deg = 240.0, true_anomaly_deg_at_epoch = 75.0, epoch_unix = 1717260840.0 }
+
+[[transmitter]]
+name = "gps_prn12"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 12
+epoch_unix = 1717260840.0
+nav = "full"
+trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, inclination_deg = 55.0, raan_deg = 210.0, true_anomaly_deg_at_epoch = 165.0, epoch_unix = 1717260840.0 }
+
+[[transmitter]]
+name = "gps_prn19"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 19
+epoch_unix = 1717260840.0
+nav = "full"
+trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, inclination_deg = 55.0, raan_deg = 165.0, true_anomaly_deg_at_epoch = 180.0, epoch_unix = 1717260840.0 }
+
+[[transmitter]]
+name = "gps_prn24"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 24
+epoch_unix = 1717260840.0
+nav = "full"
+trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, inclination_deg = 55.0, raan_deg = 15.0, true_anomaly_deg_at_epoch = 90.0, epoch_unix = 1717260840.0 }
+
+[[transmitter]]
+name = "gps_prn25"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 25
+epoch_unix = 1717260840.0
+nav = "full"
+trajectory = { kind = "circular_keplerian", semi_major_axis_m = 26_578_137.0, inclination_deg = 55.0, raan_deg = 300.0, true_anomaly_deg_at_epoch = 15.0, epoch_unix = 1717260840.0 }
+
+# ---------- receiver ----------
+
+[[receiver]]
+name = "glasgow"
+trajectory = { kind = "stationary_geodetic", lat_deg = 55.86, lon_deg = -4.25, h_m = 10.0 }
+clock = { allan_deviation_1s = 1e-11, frequency_offset_y0 = 0.5e-6 }
+[[receiver.band]]
+band_id = "gnss_l1"
+lo_carrier_hz = 1_575_420_000.0
+sample_rate_hz = 2_048_000.0
+noise_temperature_k = 290.0

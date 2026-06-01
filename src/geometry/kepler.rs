@@ -7,8 +7,10 @@ use ndarray::{Array1, Array2};
 
 use super::Trajectory;
 
-const GM_EARTH: f64 = 3.986_004_418e14;
-const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_9e-5;
+// IS-GPS-200 WGS-84 values, shared with the GPS NAV ephemeris algorithm so a
+// circular-Keplerian orbit and its broadcast ephemeris agree exactly.
+const GM_EARTH: f64 = 3.986_005e14;
+const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_146_7e-5;
 
 /// Minimal element set for a circular Keplerian orbit (no eccentricity,
 /// no argument-of-perigee; gives a GPS-like circle that the propagator

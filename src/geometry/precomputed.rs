@@ -113,7 +113,7 @@ mod tests {
     use approx::assert_relative_eq;
 
     #[test]
-    fn precomputed_matches_underlying_to_sub_metre_at_100_Hz_grid() {
+    fn precomputed_matches_underlying_to_sub_metre_at_100hz_grid() {
         let orbit = CircularKeplerian {
             semi_major_axis_m: 6_378_137.0 + 20_200_000.0,
             inclination_deg: 55.0,

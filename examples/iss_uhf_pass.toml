@@ -1,4 +1,3 @@
-# exp/009-equivalent scene as a TOML config.
 # 4 UK ground receivers observing an ISS UHF beacon at 437 MHz, 250 s pass.
 
 [scene]

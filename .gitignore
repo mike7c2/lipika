@@ -1,10 +1,17 @@
+# Build artifacts
 /target
-target/
-test_out/
-*.npy
-*.iq.npy
-*.iq.json
-Cargo.lock
-out/
+
+# Generated IQ + sidecars
 *.iq.c64
 *.iq.json
+out/
+out_*/
+test_out/
+test_results/
+
+# GNSS-SDR run logs
+gnss_sdr.log
+*.dat
+
+# Resolved dependency lock (library crate)
+Cargo.lock

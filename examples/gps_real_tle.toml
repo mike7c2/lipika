@@ -1,0 +1,106 @@
+# Real GPS constellation → position fix in GNSS-SDR.
+#
+# Eight live GPS satellites (TLEs from Celestrak, epoch ~2026-150) that are all
+# above 15° elevation over Glasgow at 2026-05-31 23:00 UTC, propagated by SGP4
+# and rotated TEME → ECEF. Each carries FULL LNAV with an ephemeris fitted
+# (osculating at toe) to its own trajectory, so the fix resolves at the true
+# receiver location; the residual reflects the two-body-vs-SGP4 ephemeris
+# approximation over the window — an end-to-end error metric for the stack.
+#
+# epoch_unix is divisible by 6 (subframe edges align to the GPS 6 s Z-count).
+
+[scene]
+epoch_unix = 1780268400.0   # 2026-05-31 23:00:00 UTC
+duration_s = 600.0
+
+[[transmitter]]
+name = "gps_prn24"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 24
+epoch_unix = 1780268400.0
+nav = "full"
+trajectory = { kind = "tle", line1 = "1 38833U 12053A   26150.86639939  .00000051  00000+0  00000+0 0  9997", line2 = "2 38833  53.5827 144.3088 0179371  65.5174 296.3427  2.00567269 99098" }
+
+[[transmitter]]
+name = "gps_prn15"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 15
+epoch_unix = 1780268400.0
+nav = "full"
+trajectory = { kind = "tle", line1 = "1 32260U 07047A   26150.77386177 -.00000055  00000+0  00000+0 0  9990", line2 = "2 32260  54.0827  80.7833 0166076  87.0458 274.8256  2.00556201136463" }
+
+[[transmitter]]
+name = "gps_prn22"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 22
+epoch_unix = 1780268400.0
+nav = "full"
+trajectory = { kind = "tle", line1 = "1 26407U 00040A   26150.58242625  .00000046  00000+0  00000+0 0  9999", line2 = "2 26407  54.8538 215.8617 0121278 302.3883 230.2243  2.00557636189594" }
+
+[[transmitter]]
+name = "gps_prn23"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 23
+epoch_unix = 1780268400.0
+nav = "full"
+trajectory = { kind = "tle", line1 = "1 45854U 20041A   26151.52781884 -.00000085  00000+0  00000+0 0  9993", line2 = "2 45854  56.6592  29.5897 0063281 204.6776 332.6203  2.00559374 43701" }
+
+[[transmitter]]
+name = "gps_prn20"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 20
+epoch_unix = 1780268400.0
+nav = "full"
+trajectory = { kind = "tle", line1 = "1 67588U 26017A   26150.24909249 -.00000043  00000+0  00000+0 0  9999", line2 = "2 67588  55.0776  89.4749 0022608 256.9258 102.7871  2.00571628431254" }
+
+[[transmitter]]
+name = "gps_prn10"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 10
+epoch_unix = 1780268400.0
+nav = "full"
+trajectory = { kind = "tle", line1 = "1 41019U 15062A   26150.82698463 -.00000088  00000+0  00000+0 0  9994", line2 = "2 41019  56.9480  31.4799 0111519 231.2324 127.8139  2.00567167 77488" }
+
+[[transmitter]]
+name = "gps_prn14"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 14
+epoch_unix = 1780268400.0
+nav = "full"
+trajectory = { kind = "tle", line1 = "1 46826U 20078A   26150.43676341  .00000051  00000+0  00000+0 0  9995", line2 = "2 46826  53.9818 211.4986 0072702 206.7371 238.5468  2.00565060 41158" }
+
+[[transmitter]]
+name = "gps_prn17"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 17
+epoch_unix = 1780268400.0
+nav = "full"
+trajectory = { kind = "tle", line1 = "1 28874U 05038A   26150.41242926 -.00000056  00000+0  00000+0 0  9999", line2 = "2 28874  54.8931 273.8947 0127762 296.0439  71.0693  2.00567025151481" }
+
+# ---------- receiver ----------
+
+[[receiver]]
+name = "glasgow"
+trajectory = { kind = "stationary_geodetic", lat_deg = 55.86, lon_deg = -4.25, h_m = 10.0 }
+clock = { allan_deviation_1s = 1e-11, frequency_offset_y0 = 0.5e-6 }
+[[receiver.band]]
+band_id = "gnss_l1"
+lo_carrier_hz = 1_575_420_000.0
+sample_rate_hz = 2_048_000.0
+noise_temperature_k = 290.0

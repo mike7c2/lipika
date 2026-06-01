@@ -4,15 +4,13 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use ndarray::{Array1, Array2};
-use rand::SeedableRng;
-use rand_xoshiro::Xoshiro256PlusPlus;
 
-use dgsn_iq_gen::channel::transmitter_contribution_at_receiver;
-use dgsn_iq_gen::geometry::{
+use lipika::channel::transmitter_contribution_at_receiver;
+use lipika::geometry::{
     kepler::CircularKeplerian, precomputed::PrecomputedTrajectory,
     stationary::Stationary, AnyTrajectory, Trajectory,
 };
-use dgsn_iq_gen::signal::ca_code::CaCodeSource;
+use lipika::signal::ca_code::CaCodeSource;
 
 fn one_sv_pass(c: &mut Criterion) {
     // Realistic single-SV chunk.
