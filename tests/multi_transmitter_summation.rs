@@ -59,6 +59,53 @@ sample_rate_hz = 1_000_000.0
 noise_power_w = 1.0e-15
 "#;
 
+// A BPSK emitter at a realistic Unix epoch. Regression guard: the bit index
+// is `floor((t_emit − signal_epoch)·bit_rate)`, so if the signal epoch is not
+// the scene epoch (it was once hardcoded to 0.0), every emission time lands
+// astronomically out of range and the baseband is all zeros — the band then
+// collapses to the bare noise floor. We assert the band carries real signal.
+const TOML_BPSK: &str = r#"
+[scene]
+epoch_unix = 1717260840.0
+duration_s = 0.05
+
+[[transmitter]]
+name = "beacon"
+carrier_hz = 1_000_000_000.0
+tx_power_dbw = 30.0
+kind = "bpsk"
+bit_rate_bps = 100_000.0
+payload_bits = 6000
+payload_seed = 7
+sync_word = [1, -1, 1, 1, -1, -1, 1, -1]
+trajectory = { kind = "stationary_ecef", x_m = 6378137.0, y_m = 0.0, z_m = 0.0 }
+
+[[receiver]]
+name = "lab"
+trajectory = { kind = "stationary_ecef", x_m = 6378137.0, y_m = 0.0, z_m = 100000.0 }
+clock = { allan_deviation_1s = 0.0 }
+[[receiver.band]]
+band_id = "test"
+lo_carrier_hz = 1_000_000_000.0
+sample_rate_hz = 1_000_000.0
+noise_power_w = 1.0e-18
+"#;
+
+#[test]
+fn bpsk_radiates_at_realistic_epoch() {
+    let scene: SceneConfig = toml::from_str(TOML_BPSK).unwrap();
+    let iq = run_scene(&scene, /*seed=*/ 1).unwrap().remove(0).iq;
+    let mean_power: f64 =
+        iq.iter().map(|v| (v.re as f64).powi(2) + (v.im as f64).powi(2)).sum::<f64>()
+            / iq.len() as f64;
+    // Noise floor is 1e-18 W; a 1 kW emitter at 100 km gives ~1e-11 W. If the
+    // baseband were zeroed the mean power would sit at ~1e-18. Demand a margin
+    // of many orders of magnitude so the test fails loudly if BPSK goes silent.
+    assert!(mean_power > 1e-13,
+            "BPSK band power {mean_power:.3e} W is at the noise floor — \
+             the baseband is silent (signal-epoch regression?)");
+}
+
 #[test]
 fn noise_only_band_has_power_within_floor_tolerance() {
     let scene: SceneConfig = toml::from_str(TOML_NO_TX).unwrap();

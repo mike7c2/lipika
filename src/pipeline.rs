@@ -125,7 +125,7 @@ fn build_signal(
             let mut rng = Xoshiro256PlusPlus::seed_from_u64(*payload_seed);
             Arc::new(BpskFrame::random(
                 sync_word, *payload_bits, *bit_rate_bps,
-                0.0, cfg.carrier_hz, &mut rng,
+                scene.scene.epoch_unix, cfg.carrier_hz, &mut rng,
             ))
         }
         SignalKind::CaCode { prn, epoch_unix, nav, nav_seed } => match nav {
