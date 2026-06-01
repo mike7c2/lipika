@@ -15,3 +15,8 @@ gnss_sdr.log
 
 # Resolved dependency lock (library crate)
 Cargo.lock
+
+# Experiment scratch (generated scenes; IQ lives on the data drive)
+experiments/build/
+__pycache__/
+*.pyc
