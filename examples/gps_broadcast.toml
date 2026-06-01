@@ -1,0 +1,91 @@
+# GPS scene driven by a RINEX broadcast-ephemeris file.
+#
+# Each satellite's trajectory is `rinex_nav`: the GPS broadcast ephemeris for
+# that PRN is read from a RINEX 3 nav file and used to BOTH fly the orbit (the
+# IS-GPS-200 SV-position algorithm) and — with nav = "full" — populate the
+# transmitted LNAV. Because it's the same ephemeris, the receiver reconstructs
+# the orbit exactly: no osculating fit, no residual.
+#
+# `examples/gps_synth.rnx` here is a synthetic stand-in (the constellation from
+# gps_fix_synthetic.toml, written as RINEX) so the example runs offline. For a
+# real scenario, point `file` at a downloaded daily broadcast file, e.g. an IGS
+# BRDC `BRDC00IGS_R_<yyy><ddd>0000_01D_GN.rnx`, and set epoch_unix within that
+# day; the matching PRNs and their real orbits come straight from the file.
+#
+# Run from the repository root so the relative path resolves:
+#   cargo run --release --bin lipika -- \
+#       --config examples/gps_broadcast.toml --output out_bcast
+
+[scene]
+epoch_unix = 1717260840.0   # within the validity window of the nav records
+duration_s = 120.0
+
+[[transmitter]]
+name = "gps_prn02"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 2
+epoch_unix = 1717260840.0
+nav = "full"
+trajectory = { kind = "rinex_nav", file = "examples/gps_synth.rnx", prn = 2 }
+
+[[transmitter]]
+name = "gps_prn06"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 6
+epoch_unix = 1717260840.0
+nav = "full"
+trajectory = { kind = "rinex_nav", file = "examples/gps_synth.rnx", prn = 6 }
+
+[[transmitter]]
+name = "gps_prn12"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 12
+epoch_unix = 1717260840.0
+nav = "full"
+trajectory = { kind = "rinex_nav", file = "examples/gps_synth.rnx", prn = 12 }
+
+[[transmitter]]
+name = "gps_prn19"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 19
+epoch_unix = 1717260840.0
+nav = "full"
+trajectory = { kind = "rinex_nav", file = "examples/gps_synth.rnx", prn = 19 }
+
+[[transmitter]]
+name = "gps_prn24"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 24
+epoch_unix = 1717260840.0
+nav = "full"
+trajectory = { kind = "rinex_nav", file = "examples/gps_synth.rnx", prn = 24 }
+
+[[transmitter]]
+name = "gps_prn25"
+carrier_hz = 1_575_420_000.0
+tx_power_dbw = 27.0
+kind = "ca_code"
+prn = 25
+epoch_unix = 1717260840.0
+nav = "full"
+trajectory = { kind = "rinex_nav", file = "examples/gps_synth.rnx", prn = 25 }
+
+[[receiver]]
+name = "glasgow"
+trajectory = { kind = "stationary_geodetic", lat_deg = 55.86, lon_deg = -4.25, h_m = 10.0 }
+clock = { allan_deviation_1s = 1e-11, frequency_offset_y0 = 0.5e-6 }
+[[receiver.band]]
+band_id = "gnss_l1"
+lo_carrier_hz = 1_575_420_000.0
+sample_rate_hz = 2_048_000.0
+noise_temperature_k = 290.0

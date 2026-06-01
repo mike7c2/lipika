@@ -216,6 +216,11 @@ pub enum TrajectoryConfig {
         true_anomaly_deg_at_epoch: f64,
         epoch_unix: f64,
     },
+    /// GPS broadcast ephemeris from a RINEX 3 nav file. The record for `prn`
+    /// whose `toe` is nearest the scene epoch drives both the orbit (the
+    /// IS-GPS-200 SV-position algorithm) and — for `nav = "full"` — the
+    /// transmitted LNAV, so the receiver reconstructs the orbit exactly.
+    RinexNav { file: String, prn: usize },
 }
 
 impl TrajectoryConfig {
@@ -228,6 +233,7 @@ impl TrajectoryConfig {
             TrajectoryConfig::StationaryEcef { .. } => "stationary_ecef",
             TrajectoryConfig::Tle { .. } => "tle",
             TrajectoryConfig::CircularKeplerian { .. } => "circular_keplerian",
+            TrajectoryConfig::RinexNav { .. } => "rinex_nav",
         }
     }
 }

@@ -611,6 +611,111 @@ pub fn sv_position_ecef(eph: &Ephemeris, t_sow: f64) -> [f64; 3] {
     ]
 }
 
+// ───────────────────── RINEX broadcast ephemeris ──────────────────────────
+
+/// A satellite trajectory backed directly by a GPS broadcast `Ephemeris`
+/// (e.g. parsed from a RINEX nav file). `position_ecef` is the IS-GPS-200
+/// SV-position algorithm, so when this drives a `nav = "full"` transmitter the
+/// broadcast message carries the *same* ephemeris and the receiver reconstructs
+/// the orbit exactly — no osculating fit, no residual.
+pub struct GpsBroadcastTrajectory {
+    eph: Ephemeris,
+    /// UTC unix time of `toe`, so a query time maps to GPS seconds-of-week
+    /// without needing the leap offset again: `t_sow = toe_s + (t − toe_unix)`.
+    toe_unix: f64,
+}
+
+impl GpsBroadcastTrajectory {
+    pub fn new(eph: Ephemeris, utc_offset_s: f64) -> Self {
+        let toe_unix =
+            GPS_EPOCH_UNIX + eph.week as f64 * SECONDS_PER_WEEK + eph.toe_s - utc_offset_s;
+        Self { eph, toe_unix }
+    }
+    /// The broadcast ephemeris this trajectory evaluates — fed straight into
+    /// the LNAV builder so signal geometry and broadcast message agree exactly.
+    pub fn ephemeris(&self) -> &Ephemeris { &self.eph }
+}
+
+impl Trajectory for GpsBroadcastTrajectory {
+    fn position_ecef(&self, t_unix: f64) -> [f64; 3] {
+        sv_position_ecef(&self.eph, self.eph.toe_s + (t_unix - self.toe_unix))
+    }
+}
+
+/// Read a 19-character RINEX float field at byte `start` ('D'/'d' exponent
+/// markers normalised to 'E'); missing/short fields read as 0.
+fn rinex_field(line: &str, start: usize) -> f64 {
+    let end = (start + 19).min(line.len());
+    if start >= line.len() { return 0.0; }
+    line[start..end].trim().replace(['D', 'd'], "E").parse().unwrap_or(0.0)
+}
+
+/// Parse GPS nav records from RINEX 3 text and return the `Ephemeris` for `prn`
+/// whose `toe` is closest to `near_unix`. Angles in RINEX nav are already in
+/// radians/SI, mapping straight onto [`Ephemeris`].
+pub fn parse_rinex3_gps_nav(
+    text: &str,
+    prn: u8,
+    near_unix: f64,
+    utc_offset_s: f64,
+) -> Option<Ephemeris> {
+    let lines: Vec<&str> = text.lines().collect();
+    // Skip the header.
+    let mut i = lines.iter().position(|l| l.contains("END OF HEADER")).map_or(0, |p| p + 1);
+    let mut best: Option<(f64, Ephemeris)> = None;
+    while i + 7 < lines.len() {
+        let l0 = lines[i];
+        // GPS record starts with "Gnn"; other systems (R/E/C/J) are skipped.
+        if l0.len() < 3 || l0.as_bytes()[0] != b'G' {
+            i += 1;
+            continue;
+        }
+        let rec_prn: u8 = l0[1..3].trim().parse().unwrap_or(0);
+        if rec_prn != prn {
+            i += 8; // GPS LNAV records are 8 lines
+            continue;
+        }
+        let (l1, l2, l3, l4, l5, l6) =
+            (lines[i + 1], lines[i + 2], lines[i + 3], lines[i + 4], lines[i + 5], lines[i + 6]);
+        let toe = rinex_field(l3, 4);
+        let week = rinex_field(l5, 42);
+        let eph = Ephemeris {
+            prn,
+            week: week as u32,
+            toe_s: toe,
+            toc_s: toe, // af terms are tiny; toc≈toe is fine
+            af0: rinex_field(l0, 23), af1: rinex_field(l0, 42), af2: rinex_field(l0, 61),
+            iode: rinex_field(l1, 4) as u8,
+            crs: rinex_field(l1, 23),
+            delta_n_rad_s: rinex_field(l1, 42),
+            m0_rad: rinex_field(l1, 61),
+            cuc: rinex_field(l2, 4),
+            e: rinex_field(l2, 23),
+            cus: rinex_field(l2, 42),
+            sqrt_a: rinex_field(l2, 61),
+            cic: rinex_field(l3, 23),
+            omega0_rad: rinex_field(l3, 42),
+            cis: rinex_field(l3, 61),
+            i0_rad: rinex_field(l4, 4),
+            crc: rinex_field(l4, 23),
+            argp_rad: rinex_field(l4, 42),
+            omega_dot_rad_s: rinex_field(l4, 61),
+            idot_rad_s: rinex_field(l5, 4),
+            health: rinex_field(l6, 23) as u8,
+            tgd: rinex_field(l6, 42),
+            iodc: rinex_field(l6, 61) as u16,
+            ura_index: 0,
+        };
+        let toe_unix = GPS_EPOCH_UNIX + week * SECONDS_PER_WEEK + toe - utc_offset_s;
+        let d = (toe_unix - near_unix).abs();
+        if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+            best = Some((d, eph));
+        }
+        i += 8;
+    }
+    best.map(|(_, e)| e)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,6 +874,49 @@ mod tests {
     fn sext32(v: u64) -> i64 {
         let v = v & 0xFFFF_FFFF;
         if v & 0x8000_0000 != 0 { v as i64 - (1i64 << 32) } else { v as i64 }
+    }
+
+    // A RINEX 3 GPS nav record (PRN 01), columns laid out per the spec.
+    const RINEX3: &str = concat!(
+        "     3.04           N: GNSS NAV DATA    G: GPS              RINEX VERSION / TYPE\n",
+        "                                                            END OF HEADER\n",
+        "G01 2024 06 01 00 00 00 4.629502538592E-04-1.022364418051E-11 0.000000000000E+00\n",
+        "     6.100000000000E+01-1.435937500000E+02 4.916182694377E-09-2.838821577537E+00\n",
+        "    -7.413327693939E-06 9.470977378078E-03 6.282702088356E-06 5.153664415359E+03\n",
+        "     5.184000000000E+05-1.490116119385E-08 1.665292991674E+00-1.117587089539E-07\n",
+        "     9.609727413912E-01 2.157812500000E+02 6.967118599040E-01-8.108285197566E-09\n",
+        "    -2.500170875643E-10 1.000000000000E+00 2.317000000000E+03 0.000000000000E+00\n",
+        "     2.000000000000E+00 0.000000000000E+00-1.117587089539E-08 6.100000000000E+01\n",
+        "     5.110800000000E+05 4.000000000000E+00\n",
+    );
+
+    #[test]
+    fn parses_rinex3_gps_nav_record() {
+        let toe_unix = GPS_EPOCH_UNIX + 2317.0 * SECONDS_PER_WEEK + 518400.0 - 18.0;
+        let eph = parse_rinex3_gps_nav(RINEX3, 1, toe_unix, 18.0).expect("PRN 1 record");
+        assert_eq!(eph.week, 2317);
+        assert_eq!(eph.toe_s, 518400.0);
+        assert!((eph.sqrt_a - 5153.664415359).abs() < 1e-6, "sqrtA {}", eph.sqrt_a);
+        assert!((eph.e - 9.470977378078e-3).abs() < 1e-12, "e {}", eph.e);
+        assert!((eph.i0_rad - 0.9609727413912).abs() < 1e-12, "i0 {}", eph.i0_rad);
+        assert!((eph.delta_n_rad_s - 4.916182694377e-9).abs() < 1e-18);
+        // SV position from the parsed ephemeris sits at GPS altitude.
+        let p = sv_position_ecef(&eph, eph.toe_s);
+        let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        assert!((26.2e6..26.9e6).contains(&r), "radius {r} not GPS-like");
+        assert!(parse_rinex3_gps_nav(RINEX3, 7, toe_unix, 18.0).is_none(), "PRN 7 absent");
+    }
+
+    #[test]
+    fn broadcast_trajectory_matches_its_own_ephemeris() {
+        let toe_unix = GPS_EPOCH_UNIX + 2317.0 * SECONDS_PER_WEEK + 518400.0 - 18.0;
+        let eph = parse_rinex3_gps_nav(RINEX3, 1, toe_unix, 18.0).unwrap();
+        let traj = GpsBroadcastTrajectory::new(eph, 18.0);
+        // The trajectory evaluates the SV-position algorithm on its ephemeris;
+        // querying at toe_unix reproduces sv_position at toe (exact NAV path).
+        let p = traj.position_ecef(toe_unix);
+        let sv = sv_position_ecef(traj.ephemeris(), traj.ephemeris().toe_s);
+        for k in 0..3 { assert!((p[k] - sv[k]).abs() < 1e-6, "axis {k}"); }
     }
 
     #[test]

@@ -40,7 +40,7 @@ use crate::geometry::{
 use crate::output::{ObserverOutput, StreamingC64Writer};
 use crate::signal::{
     bpsk::BpskFrame, ca_code::CaCodeSource, cw::ContinuousWave,
-    gps_nav::{lnav_bits, Ephemeris, GpsTime},
+    gps_nav::{lnav_bits, parse_rinex3_gps_nav, Ephemeris, GpsBroadcastTrajectory, GpsTime},
     SignalModel,
 };
 
@@ -64,7 +64,11 @@ fn bands_overlap(
     (tx_carrier_hz - band_lo_hz).abs() <= 0.5 * (tx_bandwidth_hz + band_bandwidth_hz)
 }
 
-fn build_trajectory(cfg: &TrajectoryConfig) -> Result<Arc<dyn Trajectory>> {
+fn build_trajectory(
+    cfg: &TrajectoryConfig,
+    scene_epoch_unix: f64,
+    gps_utc_offset_s: f64,
+) -> Result<Arc<dyn Trajectory>> {
     Ok(match cfg {
         TrajectoryConfig::StationaryGeodetic { lat_deg, lon_deg, h_m } => {
             Arc::new(Stationary::from_geodetic(*lat_deg, *lon_deg, *h_m))
@@ -85,7 +89,26 @@ fn build_trajectory(cfg: &TrajectoryConfig) -> Result<Arc<dyn Trajectory>> {
             true_anomaly_deg_at_epoch: *true_anomaly_deg_at_epoch,
             epoch_unix: *epoch_unix,
         }),
+        TrajectoryConfig::RinexNav { file, prn } => {
+            let eph = load_rinex_ephemeris(file, *prn, scene_epoch_unix, gps_utc_offset_s)?;
+            Arc::new(GpsBroadcastTrajectory::new(eph, gps_utc_offset_s))
+        }
     })
+}
+
+/// Read a RINEX nav file and select the GPS ephemeris for `prn` nearest the
+/// scene epoch. Used for both the trajectory and (for full NAV) the broadcast
+/// message, so the two are the same ephemeris.
+fn load_rinex_ephemeris(
+    file: &str,
+    prn: usize,
+    scene_epoch_unix: f64,
+    gps_utc_offset_s: f64,
+) -> Result<Ephemeris> {
+    let text = std::fs::read_to_string(file)
+        .map_err(|e| anyhow::anyhow!("reading RINEX nav '{file}': {e}"))?;
+    parse_rinex3_gps_nav(&text, prn as u8, scene_epoch_unix, gps_utc_offset_s)
+        .ok_or_else(|| anyhow::anyhow!("no GPS PRN {prn} ephemeris found in '{file}'"))
 }
 
 fn build_signal(
@@ -120,9 +143,10 @@ fn build_signal(
     })
 }
 
-/// Derive a satellite's ephemeris from its trajectory and build the LNAV bit
-/// stream for the whole scene. The ephemeris is exact for `circular_keplerian`
-/// (closed form) and osculating-at-`toe` for any other trajectory (e.g. TLE).
+/// Build the LNAV bit stream for the whole scene from the satellite's
+/// ephemeris. The ephemeris is the broadcast record itself for `rinex_nav`
+/// (exact — same object drives the orbit), exact closed-form for
+/// `circular_keplerian`, and osculating-at-`toe` for any other trajectory.
 fn build_lnav_bits(
     cfg: &TransmitterConfig,
     raw_traj: &dyn Trajectory,
@@ -151,6 +175,10 @@ fn build_lnav_bits(
             epoch_unix: *epoch_unix,
         };
         Ephemeris::from_circular_keplerian(&orbit, prn as u8, epoch, gps)
+    } else if let TrajectoryConfig::RinexNav { file, prn: rprn } = &cfg.trajectory {
+        // Use the broadcast record directly — no derivation, so the
+        // transmitted ephemeris is identical to the orbit we fly.
+        load_rinex_ephemeris(file, *rprn, epoch, scene.scene.gps_utc_offset_s)?
     } else {
         Ephemeris::from_trajectory(raw_traj, prn as u8, epoch, gps)
     };
@@ -176,7 +204,8 @@ impl Transmitter {
         // Build raw trajectory, then wrap into the right AnyTrajectory
         // variant. Non-stationary ones go through PrecomputedTrajectory
         // so Newton-loop queries are just two array reads + a lerp.
-        let raw = build_trajectory(&cfg.trajectory)?;
+        let raw = build_trajectory(
+            &cfg.trajectory, scene.scene.epoch_unix, scene.scene.gps_utc_offset_s)?;
         let trajectory = match cfg.trajectory.kind_name() {
             "stationary_geodetic" | "stationary_ecef" => {
                 // The Stationary impl is sub-µs to clone, no point
@@ -211,13 +240,14 @@ struct Receiver {
 }
 
 impl Receiver {
-    fn from_config(cfg: &ReceiverConfig) -> Result<Self> {
+    fn from_config(cfg: &ReceiverConfig, scene: &SceneConfig) -> Result<Self> {
         if cfg.bands.is_empty() {
             anyhow::bail!("receiver '{}' has no bands; at least one [[receiver.band]] required", cfg.name);
         }
         Ok(Self {
             name: cfg.name.clone(),
-            trajectory: build_trajectory(&cfg.trajectory)?,
+            trajectory: build_trajectory(
+                &cfg.trajectory, scene.scene.epoch_unix, scene.scene.gps_utc_offset_s)?,
             clock_spec: cfg.clock,
             bands: cfg.bands.clone(),
         })
@@ -361,7 +391,7 @@ fn prepare_scene(scene: &SceneConfig) -> Result<PreparedScene> {
     let receivers: Vec<Receiver> = scene
         .receivers
         .iter()
-        .map(Receiver::from_config)
+        .map(|cfg| Receiver::from_config(cfg, scene))
         .collect::<Result<Vec<_>>>()?;
     let mut work: Vec<(usize, usize)> = Vec::new();
     for (r_idx, rx) in receivers.iter().enumerate() {

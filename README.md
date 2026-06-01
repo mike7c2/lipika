@@ -180,10 +180,21 @@ modulation — those would use a (planned) `file_iq` source.
 ### Trajectory models
 
 `stationary_geodetic` (lat/lon/height), `stationary_ecef` (x/y/z metres),
-`tle` (SGP4-propagated two-line element), and `circular_keplerian` (a simple
-circular orbit from classical elements). Non-stationary trajectories are sampled
-onto a 10 ms grid once and linearly interpolated, which keeps the per-sample
+`tle` (SGP4-propagated two-line element, rotated TEME→ECEF), `circular_keplerian`
+(a simple circular orbit from classical elements), and `rinex_nav` (GPS
+broadcast ephemeris from a RINEX 3 nav file). Non-stationary trajectories are
+sampled onto a 10 ms grid once and linearly interpolated, keeping the per-sample
 geometry query to two array reads and a lerp while staying sub-µm over a pass.
+
+For GNSS satellites the choice matters: `tle` is convenient/offline but only
+~km-accurate for GPS (SGP4 is tuned for LEO); **`rinex_nav` is the best fit** —
+it's ~m-accurate *and* the native broadcast format, so for `nav = "full"` the
+transmitted message carries the very ephemeris that flies the orbit and the
+receiver reconstructs it exactly (no osculating fit, no residual). Point `file`
+at a daily IGS BRDC nav file; [`examples/gps_synth.rnx`](examples/gps_synth.rnx)
+is a synthetic stand-in so [`gps_broadcast.toml`](examples/gps_broadcast.toml)
+runs offline. (SP3 precise orbits — cm-level — are a planned future source for
+error-budget studies.)
 
 ### Clock model
 
@@ -375,7 +386,8 @@ to them.
   `pipeline::tests`.)*
 - **FN-4 — Signal models.** CW, BPSK, GPS L1 C/A with selectable NAV
   (`off` / `dummy` / `full` LNAV). *(Tests: `signal::ca_code`, `signal::gps_nav`.)*
-- **FN-5 — Trajectory models.** Stationary, TLE/SGP4, circular Keplerian.
+- **FN-5 — Trajectory models.** Stationary, TLE/SGP4, circular Keplerian, GPS
+  broadcast ephemeris (`rinex_nav`). *(Tests: `geometry::*`, `signal::gps_nav`.)*
 - **FN-6 — Self-describing output.** Raw `complex64` + JSON sidecar embedding
   core fields, contributing transmitters/PRNs, and the full scene config.
 - **FN-7 — Determinism.** Same scene + seed ⇒ bit-for-bit identical output.
@@ -401,9 +413,13 @@ Planned, in rough priority order:
   transmitters that only partly overlap a band, instead of admitting them whole.
 - **Propagation refinements** — multipath, ionospheric/tropospheric delay,
   relativistic clock terms.
-- **Least-squares ephemeris fitting** — fit the broadcast ephemeris (including
-  the perturbation/rate terms) to a TLE trajectory over the window, driving the
-  `gps_real_tle` fix residual toward zero.
+- **SP3 precise-ephemeris trajectory** — cm-level interpolated truth orbits;
+  paired with a broadcast-ephemeris fit this models the real signal-in-space
+  range error for error-budget studies. (Broadcast `rinex_nav` already covers
+  the exact-NAV case.)
+- **Least-squares ephemeris fitting** — fit a full broadcast ephemeris to a
+  `tle`/SP3 trajectory over the window, shrinking the residual for sources that
+  aren't already in broadcast form.
 - **`file_iq` source** — replay a recording of unknown modulation by
   interpolation.
 
