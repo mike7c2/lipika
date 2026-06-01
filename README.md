@@ -68,7 +68,10 @@ t_emit + |P_src(t_emit) − P_obs(t)| / c = t
 mix it to the receiver's baseband. Carrier Doppler, chip-rate Doppler,
 sample-rate skew between receivers, and code-phase walk all fall out of this one
 mechanism — there is no separate "apply a Doppler shift" step that could drift
-out of sync with the geometry.
+out of sync with the geometry. The solve includes the Earth-rotation (Sagnac)
+correction — the source is rotated into the reception-time ECEF frame over the
+transit — so the modelled delay is the true inertial light-travel time, faithful
+to picoseconds (the rest matters for a timing reference: ~tens of ns otherwise).
 
 Two design choices make this clean:
 

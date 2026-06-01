@@ -15,6 +15,10 @@ use crate::profile;
 use crate::signal::SignalModel;
 use crate::SPEED_OF_LIGHT_M_S;
 
+/// Earth rotation rate (rad/s), shared with the trajectory and GPS NAV code so
+/// the Sagnac-corrected geometry is self-consistent across the stack.
+const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_146_7e-5;
+
 /// Solve for emission times `t_emit` such that
 /// `t_emit + |P_src(t_emit) − P_obs(t_utc)| / c = t_utc`
 /// for each entry of `t_utc`. Returns also the per-sample slant range (m).
@@ -55,8 +59,19 @@ pub fn solve_emission_times_for<T: Trajectory + ?Sized>(
         let mut r = 0.0;
         for _ in 0..iterations {
             let [sx, sy, sz] = source_traj.position_ecef(t);
-            let dx = sx - ox;
-            let dy = sy - oy;
+            // Earth-rotation (Sagnac) correction: the source's ECEF coordinates
+            // are taken at emission time `t`, but the geometric light path must
+            // be measured in one frame. Rotate the source into the ECEF frame
+            // at reception time `tu` by the Earth rotation over the transit
+            // `tu − t`. The angle is ≤ ~6 µrad, so the linearised rotation is
+            // exact to sub-mm and avoids a per-sample sin_cos. Without this the
+            // range is wrong by ~tens of metres (~tens of ns) — significant for
+            // a timing reference.
+            let wtau = EARTH_ROTATION_RATE_RAD_S * (tu - t);
+            let sx_rot = sx + wtau * sy;
+            let sy_rot = sy - wtau * sx;
+            let dx = sx_rot - ox;
+            let dy = sy_rot - oy;
             let dz = sz - oz;
             r = (dx * dx + dy * dy + dz * dz).sqrt();
             t = tu - r * inv_c;
@@ -220,5 +235,40 @@ pub fn add_awgn_at_power(
     for v in iq.iter_mut() {
         v.re += normal.sample(rng);
         v.im += normal.sample(rng);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::geometry::stationary::Stationary;
+
+    #[test]
+    fn emission_solve_applies_earth_rotation_correction() {
+        // GPS-altitude source with an east-west line of sight, where the Sagnac
+        // term is largest. The solved range must (a) differ from the naive
+        // same-frame distance by ~tens of metres and (b) match the exact
+        // rotate-into-reception-frame computation to sub-cm.
+        let sat = Stationary { position_ecef: [25.0e6, 10.0e6, 0.0] };
+        let obs = [6_378_137.0, 0.0, 0.0];
+        let mut obs_arr = Array2::<f64>::zeros((3, 1));
+        for k in 0..3 { obs_arr[[k, 0]] = obs[k]; }
+        let t = Array1::from_vec(vec![1_717_260_840.0]);
+        let traj = AnyTrajectory::Stationary(sat);
+        let (_te, ranges) = solve_emission_times(&traj, &obs_arr, &t, 4);
+        let solved = ranges[0];
+
+        let s = [25.0e6, 10.0e6, 0.0];
+        let naive = ((s[0]-obs[0]).powi(2) + (s[1]-obs[1]).powi(2) + (s[2]-obs[2]).powi(2)).sqrt();
+        // Exact rotation by the Earth angle over the (solved) transit.
+        let th = EARTH_ROTATION_RATE_RAD_S * solved / SPEED_OF_LIGHT_M_S;
+        let (sn, cs) = th.sin_cos();
+        let sr = [s[0]*cs + s[1]*sn, -s[0]*sn + s[1]*cs, s[2]];
+        let exact = ((sr[0]-obs[0]).powi(2) + (sr[1]-obs[1]).powi(2) + (sr[2]-obs[2]).powi(2)).sqrt();
+
+        assert!((solved - naive).abs() > 1.0,
+            "Sagnac correction not applied: solved {solved} vs naive {naive}");
+        assert!((solved - exact).abs() < 0.01,
+            "linearised correction off from exact rotation: {solved} vs {exact}");
     }
 }
