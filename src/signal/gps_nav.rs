@@ -320,8 +320,8 @@ fn encode_word(d_src: &[u8; 24], d29p: u8, d30p: u8, solve_tbits: bool) -> [u8; 
     }
     let w = compute_checksum(source, solve_tbits);
     let mut out = [0u8; 30];
-    for i in 0..30 {
-        out[i] = ((w >> (29 - i)) & 1) as u8;
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = ((w >> (29 - i)) & 1) as u8;
     }
     out
 }
