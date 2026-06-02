@@ -256,6 +256,65 @@ def track_carrier_phase(iq, fs, f_ramp, t_grid, range_pred, f_cw, decim_hz=50.0)
     return t_dec, np.unwrap(ph)
 
 
+def estimate_doppler_track(iq, fs, f_ramp, win=8192, hop=4096):
+    """Data-driven Doppler(t) of a CW tone (no truth). De-rotates the known
+    `f_ramp` offset, then takes the FFT peak (parabolic-interpolated) in each
+    window → a coarse instantaneous-frequency track. Returns (t_centres,
+    doppler_hz). A smooth polynomial fit of this is precise enough to de-rotate
+    the carrier for continuous phase tracking."""
+    n = len(iq)
+    t = np.arange(n) / fs
+    base = iq * np.exp(-1j * 2 * np.pi * f_ramp * t)
+    starts = np.arange(0, n - win, hop)
+    tc = np.zeros(len(starts))
+    fd = np.zeros(len(starts))
+    freqs = np.fft.fftfreq(win, 1.0 / fs)
+    for j, s in enumerate(starts):
+        seg = base[s:s + win]
+        sp = np.abs(np.fft.fft(seg))
+        pk = np.argmax(sp)
+        a0, am, ap = sp[pk], sp[pk - 1], sp[(pk + 1) % win]
+        d = 0.5 * (am - ap) / (am - 2 * a0 + ap) if (am - 2 * a0 + ap) != 0 else 0.0
+        fd[j] = freqs[pk] + d * (fs / win)
+        tc[j] = (s + win / 2) / fs
+    return tc, fd
+
+
+def propagate_twobody_ecef(r0, v0, t, mu=3.986004418e14, omega=7.292_115_146_7e-5):
+    """Propagate an ECEF state [r0, v0] (at t[0]) under two-body gravity plus the
+    rotating-frame (Coriolis + centrifugal) terms, by RK4 on the uniform grid
+    `t`. Returns positions (len(t), 3). The dynamics constraint is what makes the
+    satellite's range observable to a tight (radially-blind) ground array."""
+    w = np.array([0.0, 0.0, omega])
+    def acc(r, v):
+        rn = np.linalg.norm(r)
+        return -mu * r / rn**3 - 2 * np.cross(w, v) - np.cross(w, np.cross(w, r))
+    out = np.zeros((len(t), 3))
+    r, v = np.array(r0, float), np.array(v0, float)
+    out[0] = r
+    for i in range(1, len(t)):
+        h = t[i] - t[i - 1]
+        k1v, k1a = v, acc(r, v)
+        k2v, k2a = v + 0.5 * h * k1a, acc(r + 0.5 * h * k1v, v + 0.5 * h * k1a)
+        k3v, k3a = v + 0.5 * h * k2a, acc(r + 0.5 * h * k2v, v + 0.5 * h * k2a)
+        k4v, k4a = v + h * k3a, acc(r + h * k3v, v + h * k3a)
+        r = r + h / 6.0 * (k1v + 2 * k2v + 2 * k3v + k4v)
+        v = v + h / 6.0 * (k1a + 2 * k2a + 2 * k3a + k4a)
+        out[i] = r
+    return out
+
+
+def sagnac_ranges(pts, rx, omega=7.292_115_146_7e-5):
+    """Sagnac-corrected ranges from source positions `pts` (M,3) to receiver
+    `rx`, matching lipika's emission solve (linearised Earth-rotation term)."""
+    d0 = pts - rx[None, :]
+    r0 = np.linalg.norm(d0, axis=1)
+    wtau = omega * r0 / C
+    xr = pts[:, 0] + wtau * pts[:, 1]
+    yr = pts[:, 1] - wtau * pts[:, 0]
+    return np.sqrt((xr - rx[0])**2 + (yr - rx[1])**2 + (pts[:, 2] - rx[2])**2)
+
+
 def coherent_geolocate(rx_ecef, psi, f_cw, x0, half_m=8.0, step_m=0.02):
     """Carrier-phase coherent geolocation (distributed beamformer).
 

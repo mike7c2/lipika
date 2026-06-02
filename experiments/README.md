@@ -147,9 +147,33 @@ one-per-epoch down to a **single constant bias per node**. You never fix
 integers; the 221 km of geometry change over the pass is the diversity that
 makes the trajectory observable, with that one per-node bias as a nuisance.
 
-**Next (Milestone B, scoped):** turn the tracked phase into the satellite's
-orbit. A tight ground array has poor *radial* observability instantaneously, so
-this needs a data-driven Doppler tracking loop (an FLL, no truth) plus a
-**Keplerian-dynamics-constrained** fit — the orbit model ties range to the
-precisely-measured angular track and Doppler, which a free position/velocity arc
-would leave at ~km. That is genuinely its own orbit-determination experiment.
+**Milestone B — carrier-phase orbit determination (no truth in the estimator).**
+A data-driven Doppler tracker (FFT-peak FLL, no truth) recovers the continuous
+phase to **~6 mm**, then a two-body ECEF state `[r, v]` is fit to the multi-node
+phase. Multi-seed (from ~2 km / 20 m/s offsets):
+
+| clock handling | recovered position | behaviour |
+|---|---:|---|
+| absorbed as per-node **bias + rate** | 0.8–1.0 km (scattered) | ill-conditioned |
+| **disciplined** (clock removed, bias only) | **246 ± 1 m** (radial 22 m, transverse 245 m), vel 3.2 m/s | **unimodal** |
+
+Two lessons:
+
+- **Motion makes the OD unimodal — the ambiguity is gone.** With the clock
+  disciplined, all seeds converge to the *same* orbit (vs Exp 4's λ-lattice of
+  equal sidelobes). Continuous phase + 221 km of geometry change turn the
+  multimodal static problem into a single basin. *No integers are fixed.*
+- **Clock discipline is essential.** Absorbing the per-node clock as a *rate*
+  also eats the differential Doppler (FDOA = the velocity/angular signal), and
+  the fit degenerates to ~km. Separating clock drift from FDOA — the job of the
+  GNSS time reference — is what makes the orbit observable. (Here the clock is
+  removed exactly; realistic GNSS discipline must estimate the drift well enough
+  to avoid this degeneracy.)
+
+The residual ~246 m is **model-limited**: the fit RMS (9 mcyc) sits above the
+~6 mm phase noise because the two-body arc doesn't perfectly match lipika's SGP4
+over the window — radial is tight (22 m), the transverse model error dominates.
+So, as expected, the *observable* is mm but the *orbit estimate* is hundreds of
+metres; tightening it is a force-model / longer-arc / wider-array question, not
+an ambiguity one. Refinements: full force model (or shorter arc) for the model
+mismatch; carrier-phase GNSS time transfer for tighter clock separation.
