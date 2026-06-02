@@ -146,14 +146,81 @@ def multilaterate_tdoa(rx_ecef, range_diff, ref=0, x0=None, iters=200):
     return x, rms
 
 
-def enu_error(est_ecef, truth_ecef):
-    """Decompose (est − truth) into local East/North/Up at truth.
-    Returns (east_m, north_m, up_m, horizontal_m, vertical_m)."""
-    lat, lon, _ = ecef_to_geodetic(truth_ecef)
+def enu_basis(p_ecef):
+    """Local East/North/Up unit vectors (ECEF columns) at an ECEF point."""
+    lat, lon, _ = ecef_to_geodetic(p_ecef)
     lat, lon = np.radians(lat), np.radians(lon)
-    d = np.asarray(est_ecef) - np.asarray(truth_ecef)
     e = np.array([-np.sin(lon), np.cos(lon), 0.0])
     n = np.array([-np.sin(lat) * np.cos(lon), -np.sin(lat) * np.sin(lon), np.cos(lat)])
     u = np.array([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)])
+    return e, n, u
+
+
+def enu_error(est_ecef, truth_ecef):
+    """Decompose (est − truth) into local East/North/Up at truth.
+    Returns (east_m, north_m, up_m, horizontal_m, vertical_m)."""
+    e, n, u = enu_basis(truth_ecef)
+    d = np.asarray(est_ecef) - np.asarray(truth_ecef)
     east, north, up = d @ e, d @ n, d @ u
     return east, north, up, float(np.hypot(east, north)), float(up)
+
+
+def tone_phase(iq, fs, f_baseband, search_hz=3000.0):
+    """Phase (rad) of a complex tone near `f_baseband`, referenced to the
+    record's **midpoint** in time.
+
+    Refines the tone frequency by an FFT peak + parabolic interpolation, then
+    de-rotates and averages. Referencing to the midpoint (centred time axis)
+    makes the recovered phase insensitive *to first order* to a residual
+    frequency error — a small f-error otherwise drifts the phase linearly across
+    the window and biases a t=0 reference by ~π·Δf·T. The midpoint is therefore
+    the natural common reference; the caller must evaluate clock Δt and geometric
+    delay at the same midpoint time. Returns (phase_rad, f_est_hz, amplitude)."""
+    n = len(iq)
+    t = (np.arange(n) - n / 2.0) / fs  # centred on the record midpoint
+    spec = np.fft.fft(iq)
+    freqs = np.fft.fftfreq(n, 1.0 / fs)
+    mask = np.abs(freqs - f_baseband) < search_hz
+    cand = np.where(mask)[0]
+    pk = cand[np.argmax(np.abs(spec[cand]))]
+    a0, am, ap = np.abs(spec[pk]), np.abs(spec[pk - 1]), np.abs(spec[(pk + 1) % n])
+    denom = am - 2 * a0 + ap
+    delta = 0.5 * (am - ap) / denom if denom != 0 else 0.0
+    f_est = freqs[pk] + delta * (fs / n)
+    z = np.mean(iq * np.exp(-1j * 2 * np.pi * f_est * t))
+    return float(np.angle(z)), float(f_est), float(np.abs(z))
+
+
+def coherent_geolocate(rx_ecef, psi, f_cw, x0, half_m=8.0, step_m=0.02):
+    """Carrier-phase coherent geolocation (distributed beamformer).
+
+    `psi[i]` is node i's clock-corrected carrier phase ≈ −2π·f_cw·|x−rxᵢ|/c
+    (+ a global constant). Grid-search the horizontal plane around `x0` (height
+    fixed at x0) maximising the coherent sum `|Σ exp(j(psiᵢ + 2π·f_cw·rᵢ/c))|`;
+    the free global phase makes the peak occur at the true geometry. Returns
+    (x_ecef, coherence_0to1, east_off_m, north_off_m, J_map, grid)."""
+    rxs = np.asarray(rx_ecef, float)
+    x0 = np.asarray(x0, float)
+    e, n, _ = enu_basis(x0)
+    k = 2.0 * np.pi * f_cw / C
+    omega = 7.292_115_146_7e-5  # Earth rotation rate, matches lipika's Sagnac term
+    grid = np.arange(-half_m, half_m + step_m, step_m)
+    de, dn = np.meshgrid(grid, grid, indexing="ij")
+    # Candidate positions: (G, G, 3)
+    pts = x0[None, None, :] + de[..., None] * e[None, None, :] + dn[..., None] * n[None, None, :]
+    acc = np.zeros(de.shape, dtype=complex)
+    for i in range(len(rxs)):
+        # Sagnac-corrected range, matching lipika's emission solve: rotate the
+        # source into the reception-frame by Ω·(range/c) (linearised). Skipping
+        # this leaves ~tenths-of-a-metre / tens-of-degrees of VHF phase error.
+        d0 = pts - rxs[i][None, None, :]
+        r0 = np.linalg.norm(d0, axis=2)
+        wtau = omega * r0 / C
+        xr = pts[..., 0] + wtau * pts[..., 1]
+        yr = pts[..., 1] - wtau * pts[..., 0]
+        r = np.sqrt((xr - rxs[i, 0])**2 + (yr - rxs[i, 1])**2 + (pts[..., 2] - rxs[i, 2])**2)
+        acc += np.exp(1j * (psi[i] + k * r))
+    j_map = np.abs(acc) / len(rxs)
+    ij = np.unravel_index(np.argmax(j_map), j_map.shape)
+    x_best = pts[ij]
+    return x_best, float(j_map[ij]), float(de[ij]), float(dn[ij]), j_map, grid

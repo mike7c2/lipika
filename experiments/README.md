@@ -97,3 +97,28 @@ f64 boundary unless the value crossing it is small. Guarded by
 `clock_offset_survives_at_realistic_epoch` (a 130 ns offset must survive at a
 1.7×10⁹ epoch), and the chunk/thread invariance tests still pass because the
 relative time keys on the global sample index.
+
+## Exp 4 — VHF carrier-phase interferometry
+
+Moving from envelope timing to the **carrier phase** as the cross-node
+observable (−2π·Δr/λ; at VHF λ≈2.2 m, ~1000× finer than Exp 1's TDOA). The
+target emits a co-located CW tone (140 MHz) for phase plus a BPSK (137 MHz) for
+a coarse prior; each node's clock is removed using the GNSS time transfer from
+Exp 3. A position-domain coherent search (distributed beamformer)
+`J(x)=|Σᵢ exp(j(ψᵢ + 2π f·rᵢ(x)/c))|` then locates the emitter — with the
+Sagnac term included to match lipika's geometry.
+
+Two findings:
+
+- **lipika's carrier phase is faithful.** Clock-corrected node phases match the
+  truth-export geometry to **±0.3° (0.01 ns)**, the coherence at the true
+  position is **1.0000**, and a search within ±1 λ of truth geolocates to
+  **2 mm**. This is the headline simulator validation — the interferometric
+  observable is correct to the millimetre.
+- **Static single-frequency geolocation is ambiguity-limited.** A metre-class
+  envelope prior is ~8 wavelengths, and the 6-node coherence has near-unity
+  sidelobes (~0.998), so a global-max search over the prior box lands on the
+  wrong lobe (tens of metres). The phase is perfect; the *inverse problem* is
+  multimodal. Resolving it needs diversity that breaks the λ-periodicity —
+  multiple frequencies, **more geometry over time (a moving emitter)**, or a
+  sub-λ prior. SNR doesn't help (sidelobes are structural). This sets up Exp 5.
