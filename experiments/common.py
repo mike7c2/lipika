@@ -156,6 +156,44 @@ def enu_basis(p_ecef):
     return e, n, u
 
 
+def position_from_ranges(rx_ecef, ranges, x0, iters=80):
+    """Least-squares source position from absolute ranges rᵢ = |x − rxᵢ|
+    (Levenberg-Marquardt). Used to reconstruct the truth trajectory from the
+    truth-export ranges and to seed the orbit fit. Returns (x_ecef, rms_m)."""
+    rx = np.asarray(rx_ecef, float)
+    r = np.asarray(ranges, float)
+    x = np.array(x0, float)
+    lam = 1e-2
+    def res_jac(x):
+        d = x[None, :] - rx
+        rr = np.linalg.norm(d, axis=1)
+        return r - rr, -d / rr[:, None]
+    res, jac = res_jac(x)
+    cost = res @ res
+    for _ in range(iters):
+        a = jac.T @ jac
+        step = np.linalg.solve(a + lam * np.diag(np.diag(a) + 1e-9), jac.T @ res)
+        xn = x + step
+        rn, jn = res_jac(xn)
+        if rn @ rn < cost:
+            x, res, jac, cost = xn, rn, jn, rn @ rn
+            lam = max(lam * 0.5, 1e-12)
+            if np.linalg.norm(step) < 1e-4:
+                break
+        else:
+            lam *= 4.0
+    return x, float(np.sqrt(np.mean(res**2)))
+
+
+def elevation_deg(rx_ecef, src_ecef):
+    """Elevation angle (deg) of `src` above the local horizon at `rx`."""
+    rx = np.asarray(rx_ecef, float)
+    up = rx / np.linalg.norm(rx)
+    los = np.asarray(src_ecef, float) - rx
+    los /= np.linalg.norm(los)
+    return float(np.degrees(np.arcsin(np.clip(los @ up, -1, 1))))
+
+
 def enu_error(est_ecef, truth_ecef):
     """Decompose (est − truth) into local East/North/Up at truth.
     Returns (east_m, north_m, up_m, horizontal_m, vertical_m)."""
@@ -189,6 +227,33 @@ def tone_phase(iq, fs, f_baseband, search_hz=3000.0):
     f_est = freqs[pk] + delta * (fs / n)
     z = np.mean(iq * np.exp(-1j * 2 * np.pi * f_est * t))
     return float(np.angle(z)), float(f_est), float(np.abs(z))
+
+
+def track_carrier_phase(iq, fs, f_ramp, t_grid, range_pred, f_cw, decim_hz=50.0):
+    """Continuously track a moving emitter's CW carrier phase.
+
+    De-rotates each ~1/decim_hz block by the predicted baseband model
+    (the `f_ramp = f_cw − LO` offset plus the predicted carrier `−k·range_pred`),
+    block-averages, and unwraps. With a good `range_pred` the residual is slowly
+    varying (just the receiver clock), so the block phase is clean and the unwrap
+    is unambiguous — turning the moving emitter's phase into a continuous,
+    integer-free observable. Returns (t_dec, residual_phase_rad) where the
+    residual is `−k·(range_true − range_pred) − 2π·f_cw·Δt` (k = 2π·f_cw/c)."""
+    n = len(iq)
+    k = 2.0 * np.pi * f_cw / C
+    block = int(round(fs / decim_hz))
+    nb = n // block
+    t_dec = np.zeros(nb)
+    ph = np.zeros(nb)
+    for b in range(nb):
+        s = b * block
+        t = (s + np.arange(block)) / fs
+        rp = np.interp(t, t_grid, range_pred)
+        derot = iq[s:s + block] * np.exp(1j * (k * rp - 2.0 * np.pi * f_ramp * t))
+        z = np.mean(derot)
+        ph[b] = np.angle(z)
+        t_dec[b] = t.mean()
+    return t_dec, np.unwrap(ph)
 
 
 def coherent_geolocate(rx_ecef, psi, f_cw, x0, half_m=8.0, step_m=0.02):

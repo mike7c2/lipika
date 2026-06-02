@@ -122,3 +122,34 @@ Two findings:
   multimodal. Resolving it needs diversity that breaks the λ-periodicity —
   multiple frequencies, **more geometry over time (a moving emitter)**, or a
   sub-λ prior. SNR doesn't help (sidelobes are structural). This sets up Exp 5.
+
+## Exp 5 — carrier-phase tracking of a moving (satellite) emitter
+
+The answer to Exp 4's ambiguity: make the emitter move. The target rides the
+**ISS TLE** (real two-line set, at the GPS-valid epoch) — a LEO at ~408 km doing
+7.36 km/s, moving **221 km across the sky in 30 s**, visible at 12–19° from all
+six nodes. Over that arc the range to each node changes by ~175 km ≈ 80 000 VHF
+wavelengths. (lipika's truth-export now also records the exact **source
+position**, since range-only reconstruction of a distant target from a tight
+array is radially ill-conditioned.)
+
+**Milestone A — the moving-emitter carrier phase is faithful.** Tracking the CW
+phase continuously and de-rotating by the truth range leaves a residual that is
+*purely the receiver clock* −2π·f·Δt(t); the scatter about it is **3–5 mm RMS
+(2–5 millicycles)** at every node. So lipika's Doppler/emission-time path
+reproduces a fast mover's carrier phase to the millimetre — the moving-emitter
+analogue of Exp 4's static 2 mm check.
+
+**This resolves the ambiguity question.** The per-node clock offset comes back
+*wrapped mod the 7.28 ns carrier period* (e.g. configured 130 ns → −1.09 ns).
+That is the whole point: continuous phase tracking collapses the ambiguity from
+one-per-epoch down to a **single constant bias per node**. You never fix
+integers; the 221 km of geometry change over the pass is the diversity that
+makes the trajectory observable, with that one per-node bias as a nuisance.
+
+**Next (Milestone B, scoped):** turn the tracked phase into the satellite's
+orbit. A tight ground array has poor *radial* observability instantaneously, so
+this needs a data-driven Doppler tracking loop (an FLL, no truth) plus a
+**Keplerian-dynamics-constrained** fit — the orbit model ties range to the
+precisely-measured angular track and Doppler, which a free position/velocity arc
+would leave at ~km. That is genuinely its own orbit-determination experiment.
