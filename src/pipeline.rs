@@ -435,10 +435,17 @@ pub fn export_truth(scene: &SceneConfig, dir: &Path, truth_hz: f64) -> Result<()
                     };
                 }
             }
+            // True source ECEF on the grid (absolute time) — an exact trajectory
+            // reference for moving emitters, where range-only reconstruction from
+            // a tight receiver array is ill-conditioned in the radial direction.
+            let sp = tx.trajectory.position_ecef_batch(&t_grid_abs);
             let mut d = transmitter_descriptor(&scene.transmitters[i]);
             d["range_m"] = serde_json::json!(ranges.to_vec());
             d["delay_s"] = serde_json::json!(delay);
             d["range_rate_m_s"] = serde_json::json!(rr);
+            d["source_x_m"] = serde_json::json!(sp.row(0).to_vec());
+            d["source_y_m"] = serde_json::json!(sp.row(1).to_vec());
+            d["source_z_m"] = serde_json::json!(sp.row(2).to_vec());
             txs.push(d);
         }
         let truth = serde_json::json!({
