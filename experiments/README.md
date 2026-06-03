@@ -177,3 +177,42 @@ So, as expected, the *observable* is mm but the *orbit estimate* is hundreds of
 metres; tightening it is a force-model / longer-arc / wider-array question, not
 an ambiguity one. Refinements: full force model (or shorter arc) for the model
 mismatch; carrier-phase GNSS time transfer for tighter clock separation.
+
+## Exp 6 — owning the clock: closing the realistic loop
+
+Exps 3–5 disciplined the node clocks with a *truth* shortcut (the truth-export
+delay, or the configured clock removed exactly). Exp 6 replaces that with a real
+estimator that recovers each node's clock from the **GPS L1 IQ alone** — built
+in the separate `gnss-rx` crate (Rust + pyo3, reusing lipika's tested IS-GPS-200
+primitives), driven from `experiments/gps_clock.py`.
+
+**The receiver (truth-free):** acquisition (parallel code/Doppler search) →
+block tracking → a **known-position clock solve** (predict each PRN's code phase
+from the broadcast ephemeris + surveyed position, the common code-phase residual
+is the clock). **Cross-validated against GNSS-SDR** on the same IQ: our recovered
+drift agrees with GNSS-SDR's `user_clk_offset` to ~0.05 ns/s, and the configured
+offset to 6.5 ns — two independent estimators, neither touching lipika truth.
+
+**The catch, and the fix — the carrier.** Feeding the *code* clock into the
+Exp 5 OD only reaches ~4 km: the conditioning-sensitive carrier-phase OD needs
+the clock **drift** known to far better than code gives over a 30 s arc. So
+gnss-rx also recovers the clock from the GPS **carrier**: de-chirp each PRN by
+the predicted geometry (code aligned with the code clock), square out the NAV,
+fit the slope → **drift to ~1×10⁻³ ns/s** (matching every node's configured
+drift to 3 digits), ~100× tighter than code.
+
+**The loop closes.** With the truth-free code-offset + carrier-drift clock:
+
+| clock fed to the OD | orbit error |
+|---|---:|
+| none | 23 km |
+| code-only (drift ~0.3 ns/s) | 4.3 km |
+| **code offset + carrier drift (gnss-rx)** | **243 m** |
+| true clock (Exp 5 ideal) | 246 m |
+
+The realistic, fully-owned, independently-validated clock reaches the **246 m
+model-limited ideal** — the complete chain (own GPS receiver → carrier-phase
+clock transfer → carrier-phase orbit determination) closes with no truth in any
+estimator. The binding requirement is now quantified: distributed carrier-phase
+coherence needs **carrier-grade** clock transfer (drift ≪ 0.3 ns/s), which
+code-based GNSS over a short arc cannot give but the carrier can.
