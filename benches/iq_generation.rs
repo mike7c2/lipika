@@ -32,7 +32,9 @@ fn one_sv_pass(c: &mut Criterion) {
     );
     let source = CaCodeSource::new(1_575_420_000.0, 1, epoch);
 
-    let t_local = Array1::from_iter((0..n).map(|i| epoch + i as f64 / fs));
+    // Epoch-relative sample times (the channel keeps the per-sample arithmetic
+    // small for sub-ns precision; the absolute epoch is passed separately).
+    let t_local = Array1::from_iter((0..n).map(|i| i as f64 / fs));
     let t_utc = t_local.clone();
     let delta_t = Array1::<f64>::zeros(n);
     let mut observer_pos = Array2::<f64>::zeros((3, n));
@@ -47,7 +49,7 @@ fn one_sv_pass(c: &mut Criterion) {
         b.iter(|| {
             transmitter_contribution_at_receiver(
                 &source, &sat, &observer_pos, &t_local, &t_utc, &delta_t,
-                1_575_420_000.0, 20.0, 2,  // 20 W tx power
+                1_575_420_000.0, 20.0, epoch, 2, None,  // lo, 20 W, epoch, newton iters, no horizon mask
             )
         })
     });

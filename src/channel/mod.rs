@@ -134,12 +134,37 @@ pub fn accumulate_transmitter_contribution(
     tx_power_w: f64,
     epoch: f64,
     newton_iters: usize,
+    horizon_mask_deg: Option<f64>,
 ) {
     let n = t_utc_rel.len();
     let (t_emit, ranges) = profile::time("tx_contribution:newton",
         || solve_emission_times(transmitter_traj, receiver_position_utc, t_utc_rel, epoch, newton_iters));
     let baseband = profile::time("tx_contribution:baseband",
         || signal.evaluate_baseband_batch(&t_emit));
+
+    // Horizon occlusion (opt-in). The channel is otherwise pure line-of-sight and
+    // would propagate straight through the Earth, so in a wide-spread or
+    // horizon-to-horizon scene a receiver would "see" a transmitter that is
+    // geometrically below its local horizon. When `horizon_mask_deg` is set we
+    // gate each sample by the transmitter's geocentric elevation at the receiver
+    // (sin elevation = LOS·up, up = O/|O|); below threshold the signal is dropped
+    // (noise remains). `None` ⇒ no work, byte-identical to before. The mask is a
+    // deterministic function of geometry per sample, so chunk/thread invariance
+    // holds. Uses the batch trajectory query at the solved emission times.
+    let visibility: Option<Vec<bool>> = horizon_mask_deg.map(|mask_deg| {
+        let sin_thr = (mask_deg * std::f64::consts::PI / 180.0).sin();
+        let abs_emit = t_emit.mapv(|t| epoch + t);
+        let src = transmitter_traj.position_ecef_batch(&abs_emit);
+        (0..n).map(|i| {
+            let (ox, oy, oz) = (receiver_position_utc[[0, i]],
+                                receiver_position_utc[[1, i]],
+                                receiver_position_utc[[2, i]]);
+            let on = (ox * ox + oy * oy + oz * oz).sqrt();
+            let (dx, dy, dz) = (src[[0, i]] - ox, src[[1, i]] - oy, src[[2, i]] - oz);
+            let dn = (dx * dx + dy * dy + dz * dz).sqrt();
+            (dx * ox + dy * oy + dz * oz) / (dn * on) >= sin_thr
+        }).collect()
+    });
     let src_carrier = signal.carrier_hz();
     let wavelength_m = SPEED_OF_LIGHT_M_S / src_carrier;
     let tx_amplitude_v = tx_power_w.sqrt();
@@ -176,7 +201,10 @@ pub fn accumulate_transmitter_contribution(
     let ranges_s = ranges.as_slice().expect("contiguous ranges");
     let delta_t_s = delta_t_receiver.as_slice().expect("contiguous delta_t");
     let t_local_s = t_local_rel.as_slice().expect("contiguous t_local_rel");
+    let vis = visibility.as_deref();
     for i in 0..n {
+        // Below the horizon ⇒ Earth-occluded, no signal (noise stays).
+        if let Some(v) = vis { if !v[i] { continue; } }
         let r = ranges_s[i];
         let delay = r * inv_c;
         let phase = neg_tau_src * (delay + delta_t_s[i])
@@ -209,11 +237,13 @@ pub fn transmitter_contribution_at_receiver(
     tx_power_w: f64,
     epoch: f64,
     newton_iters: usize,
+    horizon_mask_deg: Option<f64>,
 ) -> Array1<Complex32> {
     let mut out = Array1::<Complex32>::zeros(t_utc_rel.len());
     accumulate_transmitter_contribution(
         &mut out, signal, transmitter_traj, receiver_position_utc, t_local_rel, t_utc_rel,
         delta_t_receiver, receiver_lo_carrier_hz, tx_power_w, epoch, newton_iters,
+        horizon_mask_deg,
     );
     out
 }
@@ -286,5 +316,36 @@ mod tests {
             "Sagnac correction not applied: solved {solved} vs naive {naive}");
         assert!((solved - exact).abs() < 0.01,
             "linearised correction off from exact rotation: {solved} vs {exact}");
+    }
+
+    #[test]
+    fn horizon_mask_blocks_below_horizon_only_when_enabled() {
+        use crate::signal::ca_code::CaCodeSource;
+        // Observer on the equator; local up is +x.
+        let obs = [6_378_137.0, 0.0, 0.0];
+        let n = 8;
+        let mut obs_arr = Array2::<f64>::zeros((3, n));
+        for i in 0..n { for k in 0..3 { obs_arr[[k, i]] = obs[k]; } }
+        let t = Array1::<f64>::zeros(n);
+        let dt = Array1::<f64>::zeros(n);
+
+        // Overhead source (elevation +90°) and a source clearly below the horizon
+        // (on the far side of the Earth ⇒ LOS·up < 0).
+        let above = AnyTrajectory::Stationary(Stationary { position_ecef: [6.9e6, 0.0, 0.0] });
+        let below = AnyTrajectory::Stationary(Stationary { position_ecef: [-7.0e6, 0.0, 0.0] });
+        let src = CaCodeSource::new(1_575_420_000.0, 1, 0.0);
+        let power = |traj, mask| {
+            let c = transmitter_contribution_at_receiver(
+                &src, traj, &obs_arr, &t, &t, &dt, 1_575_420_000.0, 20.0, 1_717_260_840.0, 4, mask);
+            c.iter().map(|v| v.norm_sqr() as f64).sum::<f64>()
+        };
+
+        // Below the horizon: present unmasked, fully gated with a 0° mask.
+        assert!(power(&below, None) > 0.0, "below-horizon source should radiate when unmasked");
+        assert_eq!(power(&below, Some(0.0)), 0.0, "0° mask must drop a below-horizon source");
+        // Overhead source: a 0° mask leaves it untouched.
+        assert!(power(&above, Some(0.0)) > 0.0, "overhead source must survive the mask");
+        assert_eq!(power(&above, None), power(&above, Some(0.0)),
+            "mask must not alter an above-horizon source");
     }
 }

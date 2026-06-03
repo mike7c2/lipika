@@ -66,6 +66,14 @@ pub struct SceneMeta {
     /// to map `epoch_unix` to GPS week/seconds-of-week for full LNAV.
     #[serde(default = "default_gps_utc_offset")]
     pub gps_utc_offset_s: f64,
+    /// Optional horizon occlusion (degrees). When set, a transmitter whose
+    /// geocentric elevation at a receiver is below this angle is blocked by the
+    /// Earth and contributes no signal (the receiver still gets thermal noise).
+    /// The channel is otherwise pure line-of-sight — it would propagate straight
+    /// through the planet. `None` (default) disables masking, preserving prior
+    /// behaviour bit-for-bit. 0.0 = the geometric horizon.
+    #[serde(default)]
+    pub horizon_mask_deg: Option<f64>,
 }
 
 fn default_gps_utc_offset() -> f64 { 18.0 }

@@ -83,8 +83,7 @@ time) and avoids resampling artefacts.
 **Carrier phase is computed from absolute geometry in f64, never accumulated.**
 The phase at sample *n* is a function of the range and clock offset at *n*, so
 phase error is bounded and does not grow with run length — important for the
-long, coherent observations this is built for. (This is also why the abandoned
-GPU path didn't work; see [Notes](#notes).)
+long, coherent observations this is built for.
 
 ---
 
