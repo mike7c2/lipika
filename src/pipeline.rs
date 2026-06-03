@@ -364,27 +364,35 @@ pub fn run_scene_to_dir(
         b.build()?
     };
 
+    // Parallelise across the independent (receiver, band) work units — each owns
+    // its file and a `work_idx`-seeded RNG, so its bytes depend only on the unit,
+    // not on order or concurrency (bit-exactness preserved; manifest order kept by
+    // the indexed `collect`). This is the dominant parallel axis: there are many
+    // units (receivers × bands) but only a handful of transmitters per band, so
+    // the inner transmitter `par_iter` alone leaves most cores idle. Nested rayon
+    // shares this pool, so the two levels load-balance via work-stealing.
     pool.install(|| {
-        let mut manifests = Vec::with_capacity(work.len());
-        for (work_idx, (r_idx, b_idx)) in work.into_iter().enumerate() {
-            let receiver = &receivers[r_idx];
-            let name = format!("{}__{}", receiver.name, receiver.bands[b_idx].band_id);
-            let mut sink = FileSink { writer: StreamingC64Writer::create(dir, &name)? };
-            let meta = generate_band(
-                receiver, r_idx, b_idx, &transmitters, scene,
-                rng_seed_base, work_idx, chunk_samples, &mut sink,
-            )?;
-            sink.writer.finalize(
-                meta.epoch_unix, meta.sample_rate_hz, meta.lo_carrier_hz, &meta.descriptor,
-            )?;
-            manifests.push(OutputManifest {
-                name: meta.name,
-                path: dir.join(format!("{name}.iq.c64")),
-                n_samples: meta.n_samples,
-                descriptor: meta.descriptor,
-            });
-        }
-        Ok(manifests)
+        work.into_par_iter()
+            .enumerate()
+            .map(|(work_idx, (r_idx, b_idx))| -> Result<OutputManifest> {
+                let receiver = &receivers[r_idx];
+                let name = format!("{}__{}", receiver.name, receiver.bands[b_idx].band_id);
+                let mut sink = FileSink { writer: StreamingC64Writer::create(dir, &name)? };
+                let meta = generate_band(
+                    receiver, r_idx, b_idx, &transmitters, scene,
+                    rng_seed_base, work_idx, chunk_samples, &mut sink,
+                )?;
+                sink.writer.finalize(
+                    meta.epoch_unix, meta.sample_rate_hz, meta.lo_carrier_hz, &meta.descriptor,
+                )?;
+                Ok(OutputManifest {
+                    name: meta.name,
+                    path: dir.join(format!("{name}.iq.c64")),
+                    n_samples: meta.n_samples,
+                    descriptor: meta.descriptor,
+                })
+            })
+            .collect::<Result<Vec<_>>>()
     })
 }
 
