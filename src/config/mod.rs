@@ -199,6 +199,30 @@ pub struct ReceiverBandConfig {
     /// transmitters contribute; it is not an applied anti-alias filter.
     #[serde(default)]
     pub bandwidth_hz: Option<f64>,
+    /// Optional receiver front-end (gain/ADC/… — the [`crate::rx`] operator chain).
+    /// `None` ⇒ an ideal front-end (no quantisation), output unchanged.
+    #[serde(default)]
+    pub frontend: Option<FrontendConfig>,
+}
+
+/// Receiver front-end: the post-summation operators of the [`crate::rx::RxChain`].
+/// Grows with the chain (nonlinearity, IQ imbalance, oscillator phase noise…).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrontendConfig {
+    /// Linear RF/IF gain + AGC (dB) applied before the ADC.
+    #[serde(default)]
+    pub gain_db: Option<f64>,
+    #[serde(default)]
+    pub adc: Option<AdcConfig>,
+}
+
+/// ADC: the discrete collapse of the chain.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdcConfig {
+    /// Resolution in bits.
+    pub bits: u32,
+    /// Full-scale input (volts, ± peak); signal beyond this clips.
+    pub full_scale_v: f64,
 }
 
 impl ReceiverBandConfig {

@@ -43,6 +43,7 @@ pub mod geometry;
 pub mod output;
 pub mod pipeline;
 pub mod profile;
+pub mod rx;
 pub mod signal;
 
 /// Speed of light in m/s (IAU 2009 / WGS84 conventional value).

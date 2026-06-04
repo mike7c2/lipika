@@ -555,6 +555,9 @@ fn generate_band(
         }
     }
 
+    // Receiver front-end operator chain (built once; identity if unconfigured).
+    let rx_chain = crate::rx::RxChain::from_config(band.frontend.as_ref());
+
     // Sequential chunk loop (clock walk + noise stream + file order); the
     // expensive per-transmitter work is parallelised within each chunk.
     let mut i0 = 0usize;
@@ -602,6 +605,10 @@ fn generate_band(
         });
 
         profile::time("noise:awgn", || add_awgn_at_power(&mut acc, noise_power_w, &mut noise_rng));
+        // Receiver front-end: post-summation operator chain (gain, ADC collapse …).
+        // Identity when no `[receiver.band.frontend]` is configured. Deterministic
+        // per sample ⇒ chunk/thread invariance preserved.
+        profile::time("rx:frontend", || rx_chain.apply_post_sum(&mut acc));
         sink.push(&acc)?;
         i0 = i1;
     }
