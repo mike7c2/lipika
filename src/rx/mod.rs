@@ -56,6 +56,12 @@ pub enum PostOp {
     /// Linear RF/IF gain + AGC in dB — brings the (tiny, FSPL-attenuated) signal
     /// into the ADC's input range. The matching inverse for an estimator is trivial.
     Gain { db: f64 },
+    /// Memoryless third-order nonlinearity (LNA/mixer): `y = x·(1 − (4/3)|x|²/Pᵢₚ₃)`,
+    /// `iip3_w` = the input third-order intercept *power* (watts; lipika amplitude²
+    /// is power, so this is direct from the dBm spec). Small-signal linear; models
+    /// gain compression + IM3 at strong input. The binding spec for terrestrial
+    /// rejection (antenna doc §R2). Valid up to ~compression; the ADC bounds extremes.
+    Nonlinearity { iip3_w: f64 },
     /// The **ADC collapse**: clip to ±`full_scale_v`, then quantise to `bits`
     /// (symmetric mid-tread). This is the one discrete, lossy, non-invertible step
     /// in the entire receiver chain. Deterministic per sample ⇒ chunk/thread
@@ -69,6 +75,10 @@ impl PostOp {
             PostOp::Gain { db } => {
                 let g = 10f32.powf((db / 20.0) as f32);
                 iq.iter_mut().for_each(|c| *c *= g);
+            }
+            PostOp::Nonlinearity { iip3_w } => {
+                let k = (4.0 / 3.0 / iip3_w) as f32;
+                iq.iter_mut().for_each(|c| *c *= 1.0 - k * c.norm_sqr());
             }
             PostOp::Adc { bits, full_scale_v } => {
                 let fs = full_scale_v as f32;
@@ -104,6 +114,11 @@ impl RxChain {
             if let Some(db) = fe.gain_db {
                 post_sum.push(PostOp::Gain { db });
             }
+            if let Some(nl) = &fe.nonlinearity {
+                // dBm → watts (lipika amplitude² is power).
+                let iip3_w = 10f64.powf((nl.iip3_dbm - 30.0) / 10.0);
+                post_sum.push(PostOp::Nonlinearity { iip3_w });
+            }
             if let Some(adc) = &fe.adc {
                 post_sum.push(PostOp::Adc { bits: adc.bits, full_scale_v: adc.full_scale_v });
             }
@@ -127,7 +142,7 @@ impl RxChain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AdcConfig, FrontendConfig};
+    use crate::config::{AdcConfig, FrontendConfig, NonlinearityConfig};
 
     #[test]
     fn empty_chain_is_identity() {
@@ -145,6 +160,7 @@ mod tests {
         let chain = RxChain::from_config(Some(&FrontendConfig {
             antenna: None,
             gain_db: None,
+            nonlinearity: None,
             adc: Some(AdcConfig { bits: 4, full_scale_v: 1.0 }),
         }));
         let lsb = 1.0f32 / 7.0;
@@ -178,10 +194,32 @@ mod tests {
         let chain = RxChain::from_config(Some(&FrontendConfig {
             antenna: None,
             gain_db: Some(20.0),  // ×10
+            nonlinearity: None,
             adc: None,
         }));
         let mut iq = Array1::from_vec(vec![Complex32::new(0.1, -0.2)]);
         chain.apply_post_sum(&mut iq);
         assert!((iq[0].re - 1.0).abs() < 1e-5 && (iq[0].im + 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn nonlinearity_is_linear_small_and_compresses_large() {
+        // IIP3 = 0 dBm = 1 mW. Small signal (|x|² ≪ Pᵢₚ₃) passes ~unchanged;
+        // a signal near the intercept is compressed (|y| < |x|).
+        let chain = RxChain::from_config(Some(&FrontendConfig {
+            antenna: None,
+            gain_db: None,
+            nonlinearity: Some(NonlinearityConfig { iip3_dbm: 0.0 }),
+            adc: None,
+        }));
+        let small = Complex32::new(1e-4, 0.0);            // |x|² = 1e-8 W ≪ 1e-3
+        let large = Complex32::new(0.02, 0.0);            // |x|² = 4e-4 W ~ 0.4·Pᵢₚ₃
+        let mut iq = Array1::from_vec(vec![small, large]);
+        chain.apply_post_sum(&mut iq);
+        assert!(((iq[0] - small).norm() / small.norm()) < 1e-3, "small not linear");
+        assert!(iq[1].norm() < large.norm(), "large not compressed");
+        // exact coefficient: gain factor = 1 − (4/3)|x|²/Pᵢₚ₃
+        let expect = large.re * (1.0 - (4.0 / 3.0) * 4e-4 / 1e-3) as f32;
+        assert!((iq[1].re - expect).abs() < 1e-6);
     }
 }

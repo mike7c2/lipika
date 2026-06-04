@@ -215,8 +215,19 @@ pub struct FrontendConfig {
     /// Linear RF/IF gain + AGC (dB) applied before the ADC.
     #[serde(default)]
     pub gain_db: Option<f64>,
+    /// Third-order nonlinearity (LNA/mixer IP3).
+    #[serde(default)]
+    pub nonlinearity: Option<NonlinearityConfig>,
     #[serde(default)]
     pub adc: Option<AdcConfig>,
+}
+
+/// LNA/mixer third-order nonlinearity, specified by the input intercept.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NonlinearityConfig {
+    /// Input third-order intercept point (dBm). The binding terrestrial-rejection
+    /// spec; larger ⇒ more linear.
+    pub iip3_dbm: f64,
 }
 
 /// Parameterised antenna pattern (gain vs elevation): the chosen self-phased QFH.
