@@ -4,10 +4,11 @@ This is the mathematical specification the code implements. The guiding principl
 **everything is a continuous function of time; the only collapse to discrete
 samples is the ADC.** The transmitter is a function `s(t)`; propagation, the
 oscillator, the antenna and the front-end are *operators* on it; sampling +
-quantisation is the single discrete, lossy step. The receiver (`gnss-rx`) is the
-*inverse* of the same algebra.
+quantisation is the single discrete, lossy step. Because every operator is exact
+and stateless-in-form, an *estimator* can run the same algebra **backwards** (§6).
 
-Symbols are collected in the glossary at the end.
+The numbered equations **(E1)–(E10)** each cite the code that implements them; §8
+collects the equation ↔ code map. Symbols are in the glossary (§7).
 
 ---
 
@@ -41,7 +42,9 @@ A sample the receiver records at its own time `t` was emitted earlier, at the
 With the source at `P_s` and the receiver at `P_o`, `τ` solves the implicit
 equation (`channel::solve_emission_times`, fixed-point Newton):
 
-$$ \boxed{\;\tau(t) \;+\; \frac{\big\lVert \mathbf P_s(\tau) - \mathbf P_o(t)\big\rVert}{c} \;=\; t\;} $$
+$$ \boxed{\;\tau(t) \;+\; \frac{\big\lVert \mathbf P_s(\tau) - \mathbf P_o(t)\big\rVert}{c} \;=\; t\;} \tag{E1} $$
+
+> **code** — `channel::solve_emission_times_for` (the per-sample Newton loop).
 
 i.e. emission time + light-travel = reception time. Everything dynamic — Doppler,
 code-rate Doppler, sample-skew — falls out of `τ(t)` varying with `t`; there is no
@@ -53,7 +56,9 @@ separate "apply Doppler" step.
 path must be measured in one frame. The source is rotated into the reception-frame
 by Earth's rotation over the transit, `Δ=t-τ` (linearised, exact to sub-mm):
 
-$$ \tilde{\mathbf P}_s = R_3(\omega_\oplus\,\Delta)\,\mathbf P_s(\tau)\;\approx\;\big(P_{s,x}+\omega_\oplus\Delta\,P_{s,y},\;\; P_{s,y}-\omega_\oplus\Delta\,P_{s,x},\;\; P_{s,z}\big). $$
+$$ \tilde{\mathbf P}_s = R_3(\omega_\oplus\,\Delta)\,\mathbf P_s(\tau)\;\approx\;\big(P_{s,x}+\omega_\oplus\Delta\,P_{s,y},\;\; P_{s,y}-\omega_\oplus\Delta\,P_{s,x},\;\; P_{s,z}\big). \tag{E2} $$
+
+> **code** — the `wtau`/`sx_rot`/`sy_rot` block inside `channel::solve_emission_times_for`.
 
 The range used everywhere below is this Sagnac-corrected slant range,
 $r(t)=\lVert\tilde{\mathbf P}_s-\mathbf P_o\rVert$. Omitting it costs ~tens of ns —
@@ -63,7 +68,10 @@ that cost ~50 m of along-track until fixed.)
 
 ### 2.3 Amplitude — free-space path loss + antenna
 
-$$ A(t) \;=\; \underbrace{\frac{\lambda}{4\pi\,r(t)}\sqrt{P_{tx}}}_{\text{FSPL (volts)}}\;\cdot\;\underbrace{\sqrt{G_{\text{ant}}\!\big(\theta_s(t)\big)}}_{\text{rx antenna}},\qquad \lambda=\frac{c}{f_{tx}}. $$
+$$ A(t) \;=\; \underbrace{\frac{\lambda}{4\pi\,r(t)}\sqrt{P_{tx}}}_{\text{FSPL (volts)}}\;\cdot\;\underbrace{\sqrt{G_{\text{ant}}\!\big(\theta_s(t)\big)}}_{\text{rx antenna}},\qquad \lambda=\frac{c}{f_{tx}}. \tag{E3} $$
+
+> **code** — `amp_factor`/`amplitude` (FSPL) × `geom_gain` (antenna √G), in
+> `channel::accumulate_transmitter_contribution`'s mix loop.
 
 `P_tx` is EIRP (W); the `λ/4πr` factor is the free-space field amplitude; `√` because
 amplitude, not power. `G_ant` is the receiver antenna's power gain at the source's
@@ -72,9 +80,13 @@ power directly.
 
 ### 2.4 The received phase
 
-The phase of one source at receiver sample time `t` (`channel`, with LO `f_lo`):
+The phase of one source at receiver sample time `t` (LO `f_lo`):
 
-$$ \boxed{\;\varphi(t) \;=\; \underbrace{\arg s(\tau)}_{\text{baseband}} \;-\; \underbrace{2\pi f_{tx}\,\big(t-\tau\big)}_{\text{carrier delay}} \;+\; \underbrace{2\pi\,(f_{tx}-f_{lo})\,t}_{\text{IF / de-ramp}} \;-\; \underbrace{2\pi f_{lo}\,\delta_o(t)}_{\text{clock / LO}}\;} $$
+$$ \boxed{\;\varphi(t) \;=\; \underbrace{\arg s(\tau)}_{\text{baseband}} \;-\; \underbrace{2\pi f_{tx}\,\big(t-\tau\big)}_{\text{carrier delay}} \;+\; \underbrace{2\pi\,(f_{tx}-f_{lo})\,t}_{\text{IF / de-ramp}} \;-\; \underbrace{2\pi f_{lo}\,\delta_o(t)}_{\text{clock / LO}}\;} \tag{E4} $$
+
+> **code** — the `phase = neg_tau_src*(delay+delta_t) + tau_if*t_local` line in
+> `channel::accumulate_transmitter_contribution` (`neg_tau_src=−2πf_tx`,
+> `tau_if=2π(f_tx−f_lo)`, `delta_t`=`δ_o`).
 
 Reading the terms:
 
@@ -102,7 +114,11 @@ So one source contributes the continuous complex sample $A(t)\,|s(\tau)|\,e^{\,j
 A receiver band sees the **sum over all in-band sources** (the `bands_overlap`
 gate decides "in-band"):
 
-$$ \boxed{\; r(t)\;=\;\sum_{i\in\text{sources}} A_i(t)\,s_i\big(\tau_i(t)\big)\,e^{\,j\varphi_i(t)} \;} $$
+$$ \boxed{\; r(t)\;=\;\sum_{i\in\text{sources}} A_i(t)\,s_i\big(\tau_i(t)\big)\,e^{\,j\varphi_i(t)} \;} \tag{E5} $$
+
+> **code** — `pipeline::generate_band` sums each transmitter's
+> `accumulate_transmitter_contribution` into the band buffer `acc` (fixed order ⇒
+> deterministic). `bands_overlap` gates the source set.
 
 This is still an exact continuous function. Horizon occlusion enters here: a source
 below the receiver's local horizon is dropped (`A_i \to 0`).
@@ -118,14 +134,22 @@ the **summed band** `r(t)`. The chain, in order:
 ### 4.1 Antenna (per source) — `G_ant`
 A gain on the arrival direction. The chosen self-phased QFH is azimuthally
 symmetric, so gain depends on elevation `θ` only:
-$$ G_{\text{ant}}(\theta)\;[\text{dBi}]=\begin{cases} G_{\text{horiz}} + (G_{\text{peak}}-G_{\text{horiz}})\,\theta/90^\circ & \theta\ge0\\[2pt] G_{\text{horiz}} - \text{F/B} & \theta<0\ \text{(back-lobe)} \end{cases} $$
+$$ G_{\text{ant}}(\theta)\;[\text{dBi}]=\begin{cases} G_{\text{horiz}} + (G_{\text{peak}}-G_{\text{horiz}})\,\theta/90^\circ & \theta\ge0\\[2pt] G_{\text{horiz}} - \text{F/B} & \theta<0\ \text{(back-lobe)} \end{cases} \tag{E6} $$
 applied as `√G` to each source's amplitude (§2.3). `θ` is the same arrival angle the
 horizon mask uses.
+
+> **code** — `rx::Antenna::amplitude_at`; folded into the `geom_gain` pass of
+> `channel::accumulate_transmitter_contribution`.
 
 ### 4.2 The oscillator (per source, via `δ_o`) — `θ_{osc}(t)`
 The node has **one** oscillator phase process. Its fractional-frequency noise
 `y(t)` integrates to the **time error** `δ_o(t)` that appears in `φ` (§2.4):
-$$ \delta_o(t)\;=\;\underbrace{c_0}_{\text{offset}} + \underbrace{m\,t}_{\text{drift}} + \underbrace{\varepsilon_{\text{wFM}}(t)}_{\text{white FM (Allan }\sigma_1)} + \underbrace{\varepsilon_{\text{fFM}}(t)}_{\text{flicker FM (Allan floor)}} $$
+$$ \delta_o(t)\;=\;\underbrace{c_0}_{\text{offset}} + \underbrace{m\,t}_{\text{drift}} + \underbrace{\varepsilon_{\text{wFM}}(t)}_{\text{white FM (Allan }\sigma_1)} + \underbrace{\varepsilon_{\text{fFM}}(t)}_{\text{flicker FM (Allan floor)}} \tag{E7} $$
+
+> **code** — `clock::NodeClockSpec` (the parameters), `clock::ClockStream` (the
+> streaming `δ_o(t)`: deterministic part + white-FM Wiener walk), `clock::Flicker`
+> (the flicker-FM floor).
+
 - `c₀` — static bias (per-node, unobservable absolute; a nuisance in the OD).
 - `m` — static fractional-frequency offset (ppm-scale drift).
 - `ε_wFM` — white-FM **Wiener walk**, calibrated so $\sigma_y(\tau{=}1\text{s})=\sigma_1$; Allan $\propto\tau^{-1/2}$.
@@ -142,7 +166,10 @@ $y \mapsto g\,y$.
 
 ### 4.4 Nonlinearity (post-sum) — IP3
 Memoryless third-order LNA/mixer model with input intercept power `P_{\text{IP3}}`:
-$$ y \;\mapsto\; y\Big(1-\tfrac{4}{3}\,\frac{|y|^2}{P_{\text{IP3}}}\Big). $$
+$$ y \;\mapsto\; y\Big(1-\tfrac{4}{3}\,\frac{|y|^2}{P_{\text{IP3}}}\Big). \tag{E8} $$
+
+> **code** — `rx::PostOp::Nonlinearity`.
+
 Small-signal linear; gain-compresses and produces IM3 at strong input. The binding
 spec for terrestrial rejection. (`P_IP3` from the dBm datasheet value, direct since
 amplitude² is power.)
@@ -155,7 +182,9 @@ $y \mapsto y + n,\ n\sim\mathcal{CN}(0,P_n)$.
 The only discrete, lossy, non-invertible step: sample on the nominal grid `t_n=n/f_s`
 (aperture jitter is a time-warp of this grid), clip to the full scale `±V_{fs}`, and
 quantise to `b` bits:
-$$ x[n]\;=\;Q_b\!\big(\mathrm{clip}_{\pm V_{fs}}(y(t_n))\big),\qquad Q_b(v)=\Delta\,\mathrm{round}(v/\Delta),\ \ \Delta=\frac{V_{fs}}{2^{\,b-1}-1}. $$
+$$ x[n]\;=\;Q_b\!\big(\mathrm{clip}_{\pm V_{fs}}(y(t_n))\big),\qquad Q_b(v)=\Delta\,\mathrm{round}(v/\Delta),\ \ \Delta=\frac{V_{fs}}{2^{\,b-1}-1}. \tag{E9} $$
+
+> **code** — `rx::PostOp::Adc`.
 
 ---
 
@@ -163,7 +192,10 @@ $$ x[n]\;=\;Q_b\!\big(\mathrm{clip}_{\pm V_{fs}}(y(t_n))\big),\qquad Q_b(v)=\Del
 
 Putting it together — what lipika computes for output sample `n` of a band:
 
-$$ \boxed{\; x[n]\;=\;Q_b\!\Bigg(\mathrm{clip}\bigg[\,\mathcal N\!\Big(g\!\sum_i A_i(t_n)\,s_i(\tau_i)\,e^{\,j\varphi_i(t_n)}\Big)\;+\;n[n]\,\bigg]\Bigg)\;} \quad t_n=\tfrac{n}{f_s} $$
+$$ \boxed{\; x[n]\;=\;Q_b\!\Bigg(\mathrm{clip}\bigg[\,\mathcal N\!\Big(g\!\sum_i A_i(t_n)\,s_i(\tau_i)\,e^{\,j\varphi_i(t_n)}\Big)\;+\;n[n]\,\bigg]\Bigg)\;} \quad t_n=\tfrac{n}{f_s} \tag{E10} $$
+
+> **code** — `pipeline::generate_band` per band: the `Σ` (E5) + `add_awgn_at_power`
+> + `RxChain::apply_post_sum` (gain, NL, ADC), then `sink.push`.
 
 Everything inside `Q_b(clip(·))` is an exact continuous expression evaluated at
 `t_n`; `Q_b` is the single collapse. With an unconfigured front-end (`g=1`, no NL,
@@ -172,11 +204,12 @@ old scenes byte-identical.
 
 ---
 
-## 6. The inverse — what `gnss-rx` / the estimators do
+## 6. The inverse — what an estimator does
 
-The receiver runs the **same algebra backwards**. Given `x[n]` and the
-*invertible* operators (the lossy ones — NL, thermal, quantisation — are treated as
-noise):
+Because every operator above is exact and the lossy ones (NL, thermal,
+quantisation) are well-characterised noise, an estimator can run the **same algebra
+backwards** on `x[n]`, inverting the *invertible* operators and treating the rest as
+noise:
 
 - **De-rotation** = inverse of §2.4's carrier+IF terms: multiply by
   `e^{-j[2π(f_tx-f_lo)t - 2πf_tx r̂/c]}` using a *predicted* range `r̂` (from
@@ -184,13 +217,12 @@ noise):
 - **Code-phase prediction** = inverse of the §2.1 time-warp: predict `τ` from the
   broadcast ephemeris + surveyed position → the measured-minus-predicted code shift
   is the clock.
-- **Clock recovery** = estimating `δ_o(t)`: common-mode across all visible SVs
-  (geometry wiped), code resolves integer-ns, carrier carries the ps fraction. The
-  continuous tracker emits `δ(t)` as a knot series (`gnss-rx::clock`).
+- **Clock recovery** = estimating `δ_o(t)` (E7): common-mode across all visible SVs
+  (geometry wiped), code resolves integer-ns, carrier carries the ps fraction.
 
-Because forward and inverse are the *same* `φ`, `r`, `δ`, the simulator and the
-receiver cannot drift apart — and a result proved against lipika geometry (e.g. the
-light-time fix) transfers directly.
+Because forward and inverse are the *same* `φ`, `r`, `δ`, a simulator and an
+estimator built on this algebra cannot drift apart — and a result proved against the
+forward geometry (e.g. the light-time term, E1–E2) transfers directly to the inverse.
 
 ---
 
@@ -216,3 +248,26 @@ light-time fix) transfers directly.
 | `P_n=k_BTB` | thermal noise power |
 | `V_fs`, `b`, `Δ` | ADC full scale; bits; LSB |
 | `Q_b`, `n` (index) | `b`-bit quantiser; output sample index |
+
+---
+
+## 8. Equation ↔ code map
+
+Each formula and the function that implements it. Source files are under
+`src/`; every function below carries a `(E…)` back-reference in its doc-comment.
+
+| eq | what | code |
+|----|------|------|
+| **E1** | emission-time (light-time) solve | `channel::solve_emission_times_for` |
+| **E2** | Sagnac (Earth-rotation) correction | same loop (`wtau`/`sx_rot`/`sy_rot`) |
+| **E3** | amplitude — FSPL × antenna √G | `channel::accumulate_transmitter_contribution` (`amp_factor`, `geom_gain`) |
+| **E4** | received phase `φ(t)` | `channel::accumulate_transmitter_contribution` (the `phase = …` line) |
+| **E5** | superposition `r(t)` | `pipeline::generate_band` (sum of contributions) |
+| **E6** | antenna gain `G_ant(θ)` | `rx::Antenna::amplitude_at` |
+| **E7** | oscillator `δ_o(t)` | `clock::{NodeClockSpec, ClockStream, Flicker}` |
+| **E8** | IP3 nonlinearity | `rx::PostOp::Nonlinearity` |
+| **E9** | ADC collapse (clip + quantise) | `rx::PostOp::Adc` |
+| **E10** | full forward `x[n]` | `pipeline::generate_band` (Σ + noise + `RxChain::apply_post_sum`) |
+
+The reverse links live in the code: each listed function's doc-comment names its
+equation, so `grep -rn "SIGNAL_MODEL" src/` walks from code back to the maths.

@@ -1,4 +1,4 @@
-//! Per-observer oscillator model.
+//! Per-observer oscillator model — `SIGNAL_MODEL.md` E7 (`δ_o(t)`).
 //!
 //! `Δt(t) = c + m·t + ε(t)` where
 //!   - `c` is the constant offset

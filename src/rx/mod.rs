@@ -8,20 +8,20 @@
 //! as the single discrete collapse** and everything upstream exact.
 //!
 //! Operators split by where they act:
-//!   - **per-source** (woven into the channel contribution): antenna gain, the
-//!     oscillator time-warp `δ(t)` and LO phase `φ(t)` — *added in later steps*;
-//!   - **post-summation** (on the digitised band buffer): gain/AGC, nonlinearity,
-//!     IQ imbalance, and the ADC collapse — the [`PostOp`] chain applied here.
+//!   - **per-source** (woven into the channel contribution): antenna gain (E6) and
+//!     the oscillator `δ(t)`/LO phase (E7, in [`crate::clock`]);
+//!   - **post-summation** (on the digitised band buffer): gain/AGC, the IP3
+//!     nonlinearity (E8) and the ADC collapse (E9) — the [`PostOp`] chain here.
 //!
-//! `RxChain` is a **value** built from config; this module is the shared definition
-//! that lipika interprets forward and (Phase B) gnss-rx will interpret inverse, so
-//! the simulator and the receiver can never drift.
+//! `RxChain` is a **value** built from config; written so an estimator can invert
+//! the same operators (E-tags refer to `SIGNAL_MODEL.md`).
 
 use crate::config::FrontendConfig;
 use ndarray::Array1;
 use num_complex::Complex32;
 
-/// Parameterised antenna gain pattern (azimuthally symmetric — gain vs elevation),
+/// Parameterised antenna gain pattern (`SIGNAL_MODEL.md` E6; azimuthally
+/// symmetric — gain vs elevation),
 /// modelling the chosen self-phased QFH: peak at zenith, roll-off to the horizon,
 /// a front/back ratio below it. A **per-source** operator: applied in the channel
 /// contribution using each source's arrival elevation (the same angle the horizon
@@ -56,14 +56,15 @@ pub enum PostOp {
     /// Linear RF/IF gain + AGC in dB — brings the (tiny, FSPL-attenuated) signal
     /// into the ADC's input range. The matching inverse for an estimator is trivial.
     Gain { db: f64 },
-    /// Memoryless third-order nonlinearity (LNA/mixer): `y = x·(1 − (4/3)|x|²/Pᵢₚ₃)`,
+    /// Memoryless third-order nonlinearity (`SIGNAL_MODEL.md` E8; LNA/mixer):
+    /// `y = x·(1 − (4/3)|x|²/Pᵢₚ₃)`,
     /// `iip3_w` = the input third-order intercept *power* (watts; lipika amplitude²
     /// is power, so this is direct from the dBm spec). Small-signal linear; models
     /// gain compression + IM3 at strong input. The binding spec for terrestrial
     /// rejection (antenna doc §R2). Valid up to ~compression; the ADC bounds extremes.
     Nonlinearity { iip3_w: f64 },
-    /// The **ADC collapse**: clip to ±`full_scale_v`, then quantise to `bits`
-    /// (symmetric mid-tread). This is the one discrete, lossy, non-invertible step
+    /// The **ADC collapse** (`SIGNAL_MODEL.md` E9): clip to ±`full_scale_v`, then
+    /// quantise to `bits` (symmetric mid-tread). The one discrete, lossy, non-invertible step
     /// in the entire receiver chain. Deterministic per sample ⇒ chunk/thread
     /// invariance is preserved.
     Adc { bits: u32, full_scale_v: f64 },

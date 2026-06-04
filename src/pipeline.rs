@@ -506,6 +506,8 @@ fn noise_seed(base: u64, work_idx: usize) -> u64 {
 }
 
 /// Chunked, transmitter-parallel generation of one band, driving `sink`.
+/// **`SIGNAL_MODEL.md` E5 (superposition) + E10 (full forward: Σ + noise + the
+/// `RxChain` post-sum operators + ADC).**
 fn generate_band(
     receiver: &Receiver,
     r_idx: usize,

@@ -23,6 +23,8 @@ const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_146_7e-5;
 /// `t_emit + |P_src(t_emit) − P_obs(t_utc)| / c = t_utc`
 /// for each entry of `t_rel_utc`. Returns also the per-sample slant range (m).
 ///
+/// **`SIGNAL_MODEL.md` E1 (light-time solve) + E2 (Sagnac).**
+///
 /// **Times are epoch-relative** (seconds since the scene epoch). Keeping the
 /// per-sample arithmetic in small magnitudes preserves sub-ns precision — at
 /// absolute Unix time (~1.7e9 s) the f64 ULP is ~238 ns, which would quantise
@@ -114,6 +116,8 @@ pub fn solve_emission_times(
 /// directly into a caller-supplied buffer. Avoids allocating an
 /// intermediate per-source contribution array and the second loop pass
 /// that summing into a band accumulator would otherwise need.
+///
+/// **`SIGNAL_MODEL.md` E3 (amplitude), E4 (received phase); one term of E5.**
 ///
 /// `t_local_rel` / `t_utc_rel` are the receiver's nominal sample times in the
 /// receiver-local / UTC frames, **relative to the scene `epoch`** (seconds).
