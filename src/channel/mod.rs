@@ -135,6 +135,7 @@ pub fn accumulate_transmitter_contribution(
     epoch: f64,
     newton_iters: usize,
     horizon_mask_deg: Option<f64>,
+    antenna: Option<&crate::rx::Antenna>,
 ) {
     let n = t_utc_rel.len();
     let (t_emit, ranges) = profile::time("tx_contribution:newton",
@@ -142,29 +143,37 @@ pub fn accumulate_transmitter_contribution(
     let baseband = profile::time("tx_contribution:baseband",
         || signal.evaluate_baseband_batch(&t_emit));
 
-    // Horizon occlusion (opt-in). The channel is otherwise pure line-of-sight and
-    // would propagate straight through the Earth, so in a wide-spread or
-    // horizon-to-horizon scene a receiver would "see" a transmitter that is
-    // geometrically below its local horizon. When `horizon_mask_deg` is set we
-    // gate each sample by the transmitter's geocentric elevation at the receiver
-    // (sin elevation = LOS·up, up = O/|O|); below threshold the signal is dropped
-    // (noise remains). `None` ⇒ no work, byte-identical to before. The mask is a
-    // deterministic function of geometry per sample, so chunk/thread invariance
+    // Geometry-dependent per-sample amplitude gain, folding two opt-in effects from
+    // the source's arrival elevation (sin elevation = LOS·up, up = O/|O|):
+    //   - **horizon occlusion**: below `horizon_mask_deg` the channel would
+    //     otherwise propagate straight through the Earth, so the gain is 0;
+    //   - **antenna pattern**: √G(elevation) from the parameterised QFH.
+    // `None` (neither set) ⇒ no work, byte-identical to before. Both are
+    // deterministic functions of geometry per sample, so chunk/thread invariance
     // holds. Uses the batch trajectory query at the solved emission times.
-    let visibility: Option<Vec<bool>> = horizon_mask_deg.map(|mask_deg| {
-        let sin_thr = (mask_deg * std::f64::consts::PI / 180.0).sin();
+    let geom_gain: Option<Vec<f32>> = if horizon_mask_deg.is_some() || antenna.is_some() {
+        let sin_thr = horizon_mask_deg.map(|d| (d * std::f64::consts::PI / 180.0).sin());
         let abs_emit = t_emit.mapv(|t| epoch + t);
         let src = transmitter_traj.position_ecef_batch(&abs_emit);
-        (0..n).map(|i| {
+        Some((0..n).map(|i| {
             let (ox, oy, oz) = (receiver_position_utc[[0, i]],
                                 receiver_position_utc[[1, i]],
                                 receiver_position_utc[[2, i]]);
             let on = (ox * ox + oy * oy + oz * oz).sqrt();
             let (dx, dy, dz) = (src[[0, i]] - ox, src[[1, i]] - oy, src[[2, i]] - oz);
             let dn = (dx * dx + dy * dy + dz * dz).sqrt();
-            (dx * ox + dy * oy + dz * oz) / (dn * on) >= sin_thr
-        }).collect()
-    });
+            let sin_el = (dx * ox + dy * oy + dz * oz) / (dn * on);
+            if let Some(thr) = sin_thr {
+                if sin_el < thr { return 0.0f32; }   // below the horizon → occluded
+            }
+            match antenna {
+                Some(a) => a.amplitude_at(sin_el.clamp(-1.0, 1.0).asin().to_degrees()),
+                None => 1.0,
+            }
+        }).collect())
+    } else {
+        None
+    };
     let src_carrier = signal.carrier_hz();
     let wavelength_m = SPEED_OF_LIGHT_M_S / src_carrier;
     let tx_amplitude_v = tx_power_w.sqrt();
@@ -201,16 +210,17 @@ pub fn accumulate_transmitter_contribution(
     let ranges_s = ranges.as_slice().expect("contiguous ranges");
     let delta_t_s = delta_t_receiver.as_slice().expect("contiguous delta_t");
     let t_local_s = t_local_rel.as_slice().expect("contiguous t_local_rel");
-    let vis = visibility.as_deref();
+    let gg = geom_gain.as_deref();
     for i in 0..n {
-        // Below the horizon ⇒ Earth-occluded, no signal (noise stays).
-        if let Some(v) = vis { if !v[i] { continue; } }
+        // Geometry gain: horizon occlusion (0 below the horizon) × antenna pattern.
+        let g = match gg { Some(v) => v[i], None => 1.0 };
+        if g == 0.0 { continue; }                 // occluded ⇒ no signal (noise stays)
         let r = ranges_s[i];
         let delay = r * inv_c;
         let phase = neg_tau_src * (delay + delta_t_s[i])
                   + tau_if * t_local_s[i];
         let (sp, cp) = phase.sin_cos();
-        let amplitude = (amp_factor / r) as f32;
+        let amplitude = (amp_factor / r) as f32 * g;
         // Complex multiply baseband × (cos + j sin), scale by amplitude,
         // accumulate into the band buffer in one fused expression.
         let b = bb[i];
@@ -238,12 +248,13 @@ pub fn transmitter_contribution_at_receiver(
     epoch: f64,
     newton_iters: usize,
     horizon_mask_deg: Option<f64>,
+    antenna: Option<&crate::rx::Antenna>,
 ) -> Array1<Complex32> {
     let mut out = Array1::<Complex32>::zeros(t_utc_rel.len());
     accumulate_transmitter_contribution(
         &mut out, signal, transmitter_traj, receiver_position_utc, t_local_rel, t_utc_rel,
         delta_t_receiver, receiver_lo_carrier_hz, tx_power_w, epoch, newton_iters,
-        horizon_mask_deg,
+        horizon_mask_deg, antenna,
     );
     out
 }
@@ -336,7 +347,7 @@ mod tests {
         let src = CaCodeSource::new(1_575_420_000.0, 1, 0.0);
         let power = |traj, mask| {
             let c = transmitter_contribution_at_receiver(
-                &src, traj, &obs_arr, &t, &t, &dt, 1_575_420_000.0, 20.0, 1_717_260_840.0, 4, mask);
+                &src, traj, &obs_arr, &t, &t, &dt, 1_575_420_000.0, 20.0, 1_717_260_840.0, 4, mask, None);
             c.iter().map(|v| v.norm_sqr() as f64).sum::<f64>()
         };
 

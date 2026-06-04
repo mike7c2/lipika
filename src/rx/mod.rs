@@ -21,6 +21,35 @@ use crate::config::FrontendConfig;
 use ndarray::Array1;
 use num_complex::Complex32;
 
+/// Parameterised antenna gain pattern (azimuthally symmetric — gain vs elevation),
+/// modelling the chosen self-phased QFH: peak at zenith, roll-off to the horizon,
+/// a front/back ratio below it. A **per-source** operator: applied in the channel
+/// contribution using each source's arrival elevation (the same angle the horizon
+/// mask uses), so it scales the link budget per source, per band.
+#[derive(Debug, Clone, Copy)]
+pub struct Antenna {
+    /// Boresight (zenith) gain, dBi.
+    pub peak_dbi: f64,
+    /// Gain at the local horizon (elevation 0°), dBi.
+    pub horizon_dbi: f64,
+    /// Front/back ratio (dB): below-horizon gain = `horizon_dbi − fb_db`.
+    pub fb_db: f64,
+}
+
+impl Antenna {
+    /// Voltage gain factor √G at arrival elevation `elev_deg` ∈ [−90, 90].
+    /// Linear interpolation in dBi from horizon→zenith above the horizon, a flat
+    /// back-lobe below. (√G = 10^(dBi/20).)
+    pub fn amplitude_at(&self, elev_deg: f64) -> f32 {
+        let dbi = if elev_deg >= 0.0 {
+            self.horizon_dbi + (self.peak_dbi - self.horizon_dbi) * (elev_deg / 90.0)
+        } else {
+            self.horizon_dbi - self.fb_db
+        };
+        10f64.powf(dbi / 20.0) as f32
+    }
+}
+
 /// A post-summation operator: acts on the summed band buffer (volts).
 #[derive(Debug, Clone, Copy)]
 pub enum PostOp {
@@ -57,6 +86,9 @@ impl PostOp {
 /// step. Empty ⇒ identity (output byte-identical to no front-end).
 #[derive(Debug, Clone, Default)]
 pub struct RxChain {
+    /// Per-source operator: antenna gain (applied in the channel contribution).
+    pub antenna: Option<Antenna>,
+    /// Post-summation operators (gain, ADC collapse, …) on the band buffer.
     pub post_sum: Vec<PostOp>,
 }
 
@@ -64,7 +96,11 @@ impl RxChain {
     /// Build the chain from a band's optional `[receiver.band.frontend]` config.
     pub fn from_config(fe: Option<&FrontendConfig>) -> Self {
         let mut post_sum = Vec::new();
+        let mut antenna = None;
         if let Some(fe) = fe {
+            if let Some(a) = &fe.antenna {
+                antenna = Some(Antenna { peak_dbi: a.peak_dbi, horizon_dbi: a.horizon_dbi, fb_db: a.fb_db });
+            }
             if let Some(db) = fe.gain_db {
                 post_sum.push(PostOp::Gain { db });
             }
@@ -72,7 +108,7 @@ impl RxChain {
                 post_sum.push(PostOp::Adc { bits: adc.bits, full_scale_v: adc.full_scale_v });
             }
         }
-        RxChain { post_sum }
+        RxChain { antenna, post_sum }
     }
 
     /// Forward-interpret the post-summation operators onto the band buffer, in
@@ -84,7 +120,7 @@ impl RxChain {
     }
 
     pub fn is_identity(&self) -> bool {
-        self.post_sum.is_empty()
+        self.antenna.is_none() && self.post_sum.is_empty()
     }
 }
 
@@ -107,6 +143,7 @@ mod tests {
     fn adc_quantises_to_levels_and_clips() {
         // 4-bit ADC, full scale ±1 V: 7 positive levels, LSB = 1/7.
         let chain = RxChain::from_config(Some(&FrontendConfig {
+            antenna: None,
             gain_db: None,
             adc: Some(AdcConfig { bits: 4, full_scale_v: 1.0 }),
         }));
@@ -127,8 +164,19 @@ mod tests {
     }
 
     #[test]
+    fn antenna_pattern_peaks_at_zenith_and_rejects_back() {
+        let a = Antenna { peak_dbi: 3.9, horizon_dbi: -3.0, fb_db: 8.5 };
+        let g = |e: f64| 20.0 * (a.amplitude_at(e) as f64).log10(); // back to dBi
+        assert!((g(90.0) - 3.9).abs() < 1e-3, "zenith {}", g(90.0));   // peak
+        assert!((g(0.0) + 3.0).abs() < 1e-3, "horizon {}", g(0.0));    // horizon
+        assert!((g(-10.0) - (-3.0 - 8.5)).abs() < 1e-3);               // back-lobe
+        assert!(g(45.0) > g(0.0) && g(45.0) < g(90.0));                // monotone up
+    }
+
+    #[test]
     fn gain_scales_linearly() {
         let chain = RxChain::from_config(Some(&FrontendConfig {
+            antenna: None,
             gain_db: Some(20.0),  // ×10
             adc: None,
         }));

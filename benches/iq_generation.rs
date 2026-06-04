@@ -49,7 +49,7 @@ fn one_sv_pass(c: &mut Criterion) {
         b.iter(|| {
             transmitter_contribution_at_receiver(
                 &source, &sat, &observer_pos, &t_local, &t_utc, &delta_t,
-                1_575_420_000.0, 20.0, epoch, 2, None,  // lo, 20 W, epoch, newton iters, no horizon mask
+                1_575_420_000.0, 20.0, epoch, 2, None, None,  // …, no horizon mask, no antenna
             )
         })
     });

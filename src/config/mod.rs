@@ -209,11 +209,25 @@ pub struct ReceiverBandConfig {
 /// Grows with the chain (nonlinearity, IQ imbalance, oscillator phase noise…).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FrontendConfig {
+    /// Antenna gain pattern (per-source, applied in the channel contribution).
+    #[serde(default)]
+    pub antenna: Option<AntennaConfig>,
     /// Linear RF/IF gain + AGC (dB) applied before the ADC.
     #[serde(default)]
     pub gain_db: Option<f64>,
     #[serde(default)]
     pub adc: Option<AdcConfig>,
+}
+
+/// Parameterised antenna pattern (gain vs elevation): the chosen self-phased QFH.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AntennaConfig {
+    /// Zenith (boresight) gain, dBi.
+    pub peak_dbi: f64,
+    /// Horizon (elevation 0°) gain, dBi.
+    pub horizon_dbi: f64,
+    /// Front/back ratio, dB (below-horizon gain = `horizon_dbi − fb_db`).
+    pub fb_db: f64,
 }
 
 /// ADC: the discrete collapse of the chain.
