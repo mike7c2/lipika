@@ -12,6 +12,12 @@ allowing each receive clock to sample the signal continuously.
 This allows effects such as doppler shift to emerge naturally from sampling and
 allows advanced modelling of clock noise effects.
 
+📐 **[SIGNAL_MODEL.md](SIGNAL_MODEL.md)** — the algebra of the chain: the
+transmitter `s(t)`, the emission-time / Sagnac propagation, the receiver operator
+stack (antenna, oscillator δ(t)+LO, gain, IP3, the ADC collapse), and the full
+forward formula `x[n] = Q(clip(Σ …))` with every term discussed. The receiver
+(`gnss-rx`) is the inverse of the same algebra.
+
 ---
 
 ## Quick start
