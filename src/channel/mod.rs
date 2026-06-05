@@ -138,7 +138,6 @@ pub fn accumulate_transmitter_contribution(
     tx_power_w: f64,
     epoch: f64,
     newton_iters: usize,
-    horizon_mask_deg: Option<f64>,
     antenna: Option<&crate::rx::Antenna>,
 ) {
     let n = t_utc_rel.len();
@@ -147,19 +146,16 @@ pub fn accumulate_transmitter_contribution(
     let baseband = profile::time("tx_contribution:baseband",
         || signal.evaluate_baseband_batch(&t_emit));
 
-    // Geometry-dependent per-sample amplitude gain, folding two opt-in effects from
-    // the source's arrival elevation (sin elevation = LOS·up, up = O/|O|):
-    //   - **horizon occlusion**: below `horizon_mask_deg` the channel would
-    //     otherwise propagate straight through the Earth, so the gain is 0;
-    //   - **antenna pattern**: √G(elevation) from the parameterised QFH.
-    // `None` (neither set) ⇒ no work, byte-identical to before. Both are
-    // deterministic functions of geometry per sample, so chunk/thread invariance
-    // holds. Uses the batch trajectory query at the solved emission times.
-    let geom_gain: Option<Vec<f32>> = if horizon_mask_deg.is_some() || antenna.is_some() {
-        let sin_thr = horizon_mask_deg.map(|d| (d * std::f64::consts::PI / 180.0).sin());
+    // Geometry-dependent per-sample amplitude gain: the **antenna pattern**
+    // √G(elevation) from the source's arrival elevation (sin elevation = LOS·up,
+    // up = O/|O|). This also carries **Earth occlusion** — an antenna with a
+    // `cutoff_deg` returns 0 below it (a set satellite is blocked). `None` (no
+    // antenna) ⇒ no work, byte-identical to before. Deterministic per sample, so
+    // chunk/thread invariance holds. Uses the batch query at the solved emission times.
+    let geom_gain: Option<Vec<f32>> = antenna.map(|a| {
         let abs_emit = t_emit.mapv(|t| epoch + t);
         let src = transmitter_traj.position_ecef_batch(&abs_emit);
-        Some((0..n).map(|i| {
+        (0..n).map(|i| {
             let (ox, oy, oz) = (receiver_position_utc[[0, i]],
                                 receiver_position_utc[[1, i]],
                                 receiver_position_utc[[2, i]]);
@@ -167,17 +163,9 @@ pub fn accumulate_transmitter_contribution(
             let (dx, dy, dz) = (src[[0, i]] - ox, src[[1, i]] - oy, src[[2, i]] - oz);
             let dn = (dx * dx + dy * dy + dz * dz).sqrt();
             let sin_el = (dx * ox + dy * oy + dz * oz) / (dn * on);
-            if let Some(thr) = sin_thr {
-                if sin_el < thr { return 0.0f32; }   // below the horizon → occluded
-            }
-            match antenna {
-                Some(a) => a.amplitude_at(sin_el.clamp(-1.0, 1.0).asin().to_degrees()),
-                None => 1.0,
-            }
-        }).collect())
-    } else {
-        None
-    };
+            a.amplitude_at(sin_el.clamp(-1.0, 1.0).asin().to_degrees())
+        }).collect()
+    });
     let src_carrier = signal.carrier_hz();
     let wavelength_m = SPEED_OF_LIGHT_M_S / src_carrier;
     let tx_amplitude_v = tx_power_w.sqrt();
@@ -216,7 +204,7 @@ pub fn accumulate_transmitter_contribution(
     let t_local_s = t_local_rel.as_slice().expect("contiguous t_local_rel");
     let gg = geom_gain.as_deref();
     for i in 0..n {
-        // Geometry gain: horizon occlusion (0 below the horizon) × antenna pattern.
+        // Antenna pattern gain (carries occlusion: 0 below the antenna cutoff).
         let g = match gg { Some(v) => v[i], None => 1.0 };
         if g == 0.0 { continue; }                 // occluded ⇒ no signal (noise stays)
         let r = ranges_s[i];
@@ -251,14 +239,13 @@ pub fn transmitter_contribution_at_receiver(
     tx_power_w: f64,
     epoch: f64,
     newton_iters: usize,
-    horizon_mask_deg: Option<f64>,
     antenna: Option<&crate::rx::Antenna>,
 ) -> Array1<Complex32> {
     let mut out = Array1::<Complex32>::zeros(t_utc_rel.len());
     accumulate_transmitter_contribution(
         &mut out, signal, transmitter_traj, receiver_position_utc, t_local_rel, t_utc_rel,
         delta_t_receiver, receiver_lo_carrier_hz, tx_power_w, epoch, newton_iters,
-        horizon_mask_deg, antenna,
+        antenna,
     );
     out
 }
@@ -334,8 +321,9 @@ mod tests {
     }
 
     #[test]
-    fn horizon_mask_blocks_below_horizon_only_when_enabled() {
+    fn antenna_cutoff_occludes_below_horizon() {
         use crate::signal::ca_code::CaCodeSource;
+        use crate::rx::Antenna;
         // Observer on the equator; local up is +x.
         let obs = [6_378_137.0, 0.0, 0.0];
         let n = 8;
@@ -349,18 +337,20 @@ mod tests {
         let above = AnyTrajectory::Stationary(Stationary { position_ecef: [6.9e6, 0.0, 0.0] });
         let below = AnyTrajectory::Stationary(Stationary { position_ecef: [-7.0e6, 0.0, 0.0] });
         let src = CaCodeSource::new(1_575_420_000.0, 1, 0.0);
-        let power = |traj, mask| {
+        // Unit-gain antennas: one with a 0° cutoff (the occlusion), one without.
+        let occ = Antenna { peak_dbi: 0.0, horizon_dbi: 0.0, fb_db: 0.0, cutoff_deg: Some(0.0) };
+        let open = Antenna { peak_dbi: 0.0, horizon_dbi: 0.0, fb_db: 0.0, cutoff_deg: None };
+        let power = |traj, ant: Option<&Antenna>| {
             let c = transmitter_contribution_at_receiver(
-                &src, traj, &obs_arr, &t, &t, &dt, 1_575_420_000.0, 20.0, 1_717_260_840.0, 4, mask, None);
+                &src, traj, &obs_arr, &t, &t, &dt, 1_575_420_000.0, 20.0, 1_717_260_840.0, 4, ant);
             c.iter().map(|v| v.norm_sqr() as f64).sum::<f64>()
         };
 
-        // Below the horizon: present unmasked, fully gated with a 0° mask.
-        assert!(power(&below, None) > 0.0, "below-horizon source should radiate when unmasked");
-        assert_eq!(power(&below, Some(0.0)), 0.0, "0° mask must drop a below-horizon source");
-        // Overhead source: a 0° mask leaves it untouched.
-        assert!(power(&above, Some(0.0)) > 0.0, "overhead source must survive the mask");
-        assert_eq!(power(&above, None), power(&above, Some(0.0)),
-            "mask must not alter an above-horizon source");
+        // No antenna ⇒ no occlusion; an open antenna radiates the back-lobe.
+        assert!(power(&below, None) > 0.0, "below-horizon source radiates with no antenna");
+        assert!(power(&below, Some(&open)) > 0.0, "open antenna: below-horizon via back-lobe");
+        // A 0° cutoff occludes below the horizon, leaves the overhead source.
+        assert_eq!(power(&below, Some(&occ)), 0.0, "0° cutoff must drop a below-horizon source");
+        assert!(power(&above, Some(&occ)) > 0.0, "overhead source survives the cutoff");
     }
 }

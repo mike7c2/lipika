@@ -34,13 +34,20 @@ pub struct Antenna {
     pub horizon_dbi: f64,
     /// Front/back ratio (dB): below-horizon gain = `horizon_dbi − fb_db`.
     pub fb_db: f64,
+    /// Optional lower cutoff elevation (degrees): below it the gain is 0. This is
+    /// how **Earth line-of-sight occlusion** is modelled — as a property of the
+    /// antenna, not a separate channel pass. `None` = no cutoff (back-lobe to −90°).
+    pub cutoff_deg: Option<f64>,
 }
 
 impl Antenna {
     /// Voltage gain factor √G at arrival elevation `elev_deg` ∈ [−90, 90].
     /// Linear interpolation in dBi from horizon→zenith above the horizon, a flat
-    /// back-lobe below. (√G = 10^(dBi/20).)
+    /// back-lobe below, and **0 below `cutoff_deg`** (occlusion). (√G = 10^(dBi/20).)
     pub fn amplitude_at(&self, elev_deg: f64) -> f32 {
+        if let Some(c) = self.cutoff_deg {
+            if elev_deg < c { return 0.0; }
+        }
         let dbi = if elev_deg >= 0.0 {
             self.horizon_dbi + (self.peak_dbi - self.horizon_dbi) * (elev_deg / 90.0)
         } else {
@@ -110,7 +117,7 @@ impl RxChain {
         let mut antenna = None;
         if let Some(fe) = fe {
             if let Some(a) = &fe.antenna {
-                antenna = Some(Antenna { peak_dbi: a.peak_dbi, horizon_dbi: a.horizon_dbi, fb_db: a.fb_db });
+                antenna = Some(Antenna { peak_dbi: a.peak_dbi, horizon_dbi: a.horizon_dbi, fb_db: a.fb_db, cutoff_deg: a.cutoff_deg });
             }
             if let Some(db) = fe.gain_db {
                 post_sum.push(PostOp::Gain { db });
@@ -182,12 +189,17 @@ mod tests {
 
     #[test]
     fn antenna_pattern_peaks_at_zenith_and_rejects_back() {
-        let a = Antenna { peak_dbi: 3.9, horizon_dbi: -3.0, fb_db: 8.5 };
+        let a = Antenna { peak_dbi: 3.9, horizon_dbi: -3.0, fb_db: 8.5, cutoff_deg: None };
         let g = |e: f64| 20.0 * (a.amplitude_at(e) as f64).log10(); // back to dBi
         assert!((g(90.0) - 3.9).abs() < 1e-3, "zenith {}", g(90.0));   // peak
         assert!((g(0.0) + 3.0).abs() < 1e-3, "horizon {}", g(0.0));    // horizon
         assert!((g(-10.0) - (-3.0 - 8.5)).abs() < 1e-3);               // back-lobe
         assert!(g(45.0) > g(0.0) && g(45.0) < g(90.0));                // monotone up
+        // cutoff occludes below it (Earth LOS), leaves above untouched.
+        let ac = Antenna { cutoff_deg: Some(0.0), ..a };
+        assert_eq!(ac.amplitude_at(-0.1), 0.0, "below cutoff occluded");
+        assert!(ac.amplitude_at(0.0) > 0.0, "at cutoff present");
+        assert_eq!(ac.amplitude_at(45.0), a.amplitude_at(45.0), "above cutoff unchanged");
     }
 
     #[test]

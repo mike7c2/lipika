@@ -595,7 +595,7 @@ fn generate_band(
                         &*tx.signal, &tx.trajectory,
                         &receiver_position, &t_local_rel, &t_utc_rel, &delta_t,
                         lo, tx.tx_power_w, epoch, NEWTON_ITERATIONS,
-                        scene.scene.horizon_mask_deg, rx_chain.antenna.as_ref(),
+                        rx_chain.antenna.as_ref(),
                     )
                 })
                 .collect();

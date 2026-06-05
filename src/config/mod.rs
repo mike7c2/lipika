@@ -66,14 +66,6 @@ pub struct SceneMeta {
     /// to map `epoch_unix` to GPS week/seconds-of-week for full LNAV.
     #[serde(default = "default_gps_utc_offset")]
     pub gps_utc_offset_s: f64,
-    /// Optional horizon occlusion (degrees). When set, a transmitter whose
-    /// geocentric elevation at a receiver is below this angle is blocked by the
-    /// Earth and contributes no signal (the receiver still gets thermal noise).
-    /// The channel is otherwise pure line-of-sight — it would propagate straight
-    /// through the planet. `None` (default) disables masking, preserving prior
-    /// behaviour bit-for-bit. 0.0 = the geometric horizon.
-    #[serde(default)]
-    pub horizon_mask_deg: Option<f64>,
 }
 
 fn default_gps_utc_offset() -> f64 { 18.0 }
@@ -239,6 +231,14 @@ pub struct AntennaConfig {
     pub horizon_dbi: f64,
     /// Front/back ratio, dB (below-horizon gain = `horizon_dbi − fb_db`).
     pub fb_db: f64,
+    /// Optional lower cutoff elevation (degrees): below it the antenna gain is 0,
+    /// modelling Earth line-of-sight occlusion as a property of the antenna itself
+    /// (a set satellite is blocked; a near-horizon terrestrial source above the
+    /// cutoff is merely attenuated by the back-lobe). `None` (default) = no cutoff,
+    /// back-lobe all the way down — bit-for-bit the prior behaviour. 0.0 = the
+    /// geometric horizon.
+    #[serde(default)]
+    pub cutoff_deg: Option<f64>,
 }
 
 /// ADC: the discrete collapse of the chain.
