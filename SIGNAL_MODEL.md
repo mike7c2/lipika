@@ -7,8 +7,10 @@ oscillator, the antenna and the front-end are *operators* on it; sampling +
 quantisation is the single discrete, lossy step. Because every operator is exact
 and stateless-in-form, an *estimator* can run the same algebra **backwards** (§6).
 
-The numbered equations **(E1)–(E10)** each cite the code that implements them; §8
-collects the equation ↔ code map. Symbols are in the glossary (§7).
+The numbered equations **(E1)–(E10)** each cite the code that implements them; §9
+collects the equation ↔ code map. Symbols are in the glossary (§8). What the model
+deliberately leaves out is in **§7 (notable exclusions)** — read it before trusting
+a result that depends on an unmodelled effect.
 
 ---
 
@@ -37,24 +39,39 @@ what keeps the model exact.
 
 ### 2.1 Emission time (the light-time solve)
 
-A sample the receiver records at its own time `t` was emitted earlier, at the
-**emission time** `τ(t)`, because the signal travelled the slant range at `c`.
-With the source at `P_s` and the receiver at `P_o`, `τ` solves the implicit
-equation (`channel::solve_emission_times`, fixed-point Newton):
+The receiver timestamps each sample with its **own clock**, which reads `t = n/f_s`
+at sample `n`. That clock is imperfect: its error `δ_o(t)` (§4.2) means the **true**
+(coordinate) time at which the sample is actually captured is
 
-$$ \boxed{\;\tau(t) \;+\; \frac{\big\lVert \mathbf P_s(\tau) - \mathbf P_o(t)\big\rVert}{c} \;=\; t\;} \tag{E1} $$
+$$ t_{\text{utc}} \;=\; t - \delta_o(t). $$
 
-> **code** — `channel::solve_emission_times_for` (the per-sample Newton loop).
+**All geometry is evaluated at true time.** A sample whose true reception instant is
+`t_utc` was emitted earlier, at the **emission time** `τ`, because the signal
+travelled the slant range at `c`. With the source at `P_s` and the receiver at
+`P_o`, `τ` solves the implicit equation:
 
-i.e. emission time + light-travel = reception time. Everything dynamic — Doppler,
-code-rate Doppler, sample-skew — falls out of `τ(t)` varying with `t`; there is no
-separate "apply Doppler" step.
+$$ \boxed{\;\tau \;+\; \frac{\big\lVert \mathbf P_s(\tau) - \mathbf P_o(t_{\text{utc}})\big\rVert}{c} \;=\; t_{\text{utc}} \;=\; t - \delta_o(t)\;} \tag{E1} $$
+
+> **code** — the pipeline forms the true-time grid `t_utc_rel = t_local_rel − delta_t`
+> (`pipeline.rs`), then `channel::solve_emission_times_for` runs the per-sample loop.
+
+i.e. emission time + light-travel = true reception time. **This is where the clock
+enters the geometry**: `τ` is anchored to `t_utc = t − δ_o`, so every quantity derived
+from it — the envelope `s(τ)`, the range `r`, the Doppler — carries the clock. The
+sample is *indexed* by clock time `t`; the physics happens at `t_utc`. Everything
+dynamic — Doppler, code-rate Doppler, sample-rate skew — falls out of `τ` varying
+across samples, with no separate "apply Doppler" or "apply clock" step. This is the
+exact (*wideband*) treatment of Doppler as a time-scaling of the waveform rather than
+the narrowband `e^{j2πf_d t}` frequency-shift approximation [KW65; VanTrees-III;
+Bello63]; in GNSS terms the carrier and code Doppler are then automatically the same
+`ṙ/c` scaling [KH17]. The light-time solve itself is the standard ephemeris
+"reception-case" construction [SPICE96; IERS2010].
 
 ### 2.2 Earth rotation (Sagnac)
 
-`P_s(τ)` and `P_o(t)` are ECEF positions at *different* instants, but the geometric
+`P_s(τ)` and `P_o(t_utc)` are ECEF positions at *different* instants, but the geometric
 path must be measured in one frame. The source is rotated into the reception-frame
-by Earth's rotation over the transit, `Δ=t-τ` (linearised, exact to sub-mm):
+by Earth's rotation over the transit, `Δ = t_utc − τ = r/c` (linearised, exact to sub-mm):
 
 $$ \tilde{\mathbf P}_s = R_3(\omega_\oplus\,\Delta)\,\mathbf P_s(\tau)\;\approx\;\big(P_{s,x}+\omega_\oplus\Delta\,P_{s,y},\;\; P_{s,y}-\omega_\oplus\Delta\,P_{s,x},\;\; P_{s,z}\big). \tag{E2} $$
 
@@ -62,7 +79,7 @@ $$ \tilde{\mathbf P}_s = R_3(\omega_\oplus\,\Delta)\,\mathbf P_s(\tau)\;\approx\
 
 The range used everywhere below is this Sagnac-corrected slant range,
 $r(t)=\lVert\tilde{\mathbf P}_s-\mathbf P_o\rVert$. Omitting it costs ~tens of ns —
-significant for a timing reference. (The OD side, `common.emission_ranges`, solves
+significant for a timing reference [IERS2010]. (The OD side, `common.emission_ranges`, solves
 the *same* equation — reception- vs emission-time geometry was the light-time bug
 that cost ~50 m of along-track until fixed.)
 
@@ -80,32 +97,49 @@ power directly.
 
 ### 2.4 The received phase
 
-The phase of one source at receiver sample time `t` (LO `f_lo`):
+Two phase processes meet at the mixer: the **arriving carrier**, whose phase was set
+at the source at emission time `τ`, and the receiver **LO**. The LO is generated from
+the same oscillator that defines the clock, so at sample `n` its phase is exactly
+`2πf_lo·t` — clock time, *by definition of the clock*. The baseband phase is the
+arriving carrier phase minus the LO phase:
 
-$$ \boxed{\;\varphi(t) \;=\; \underbrace{\arg s(\tau)}_{\text{baseband}} \;-\; \underbrace{2\pi f_{tx}\,\big(t-\tau\big)}_{\text{carrier delay}} \;+\; \underbrace{2\pi\,(f_{tx}-f_{lo})\,t}_{\text{IF / de-ramp}} \;-\; \underbrace{2\pi f_{lo}\,\delta_o(t)}_{\text{clock / LO}}\;} \tag{E4} $$
+$$ \boxed{\;\varphi \;=\; \underbrace{\arg s(\tau)}_{\text{message}} \;+\; \underbrace{2\pi f_{tx}\,\tau}_{\text{arriving carrier}} \;-\; \underbrace{2\pi f_{lo}\,t}_{\text{LO (clock time)}}\;} \tag{E4} $$
+
+Only two frequencies appear: `f_tx` rides on `τ` (true-time geometry), `f_lo` rides on
+`t` (clock time). Expanding with `τ = t_utc − r/c = t − δ_o − r/c` separates the
+familiar terms and matches the code exactly:
+
+$$ \varphi \;=\; \arg s(\tau)\;-\;2\pi f_{tx}\Big(\tfrac{r}{c}+\delta_o\Big)\;+\;2\pi(f_{tx}-f_{lo})\,t. $$
 
 > **code** — the `phase = neg_tau_src*(delay+delta_t) + tau_if*t_local` line in
 > `channel::accumulate_transmitter_contribution` (`neg_tau_src=−2πf_tx`,
-> `tau_if=2π(f_tx−f_lo)`, `delta_t`=`δ_o`).
+> `tau_if=2π(f_tx−f_lo)`, `delta_t`=`δ_o`, `t_local`=`t`). The envelope `s(τ)` is
+> evaluated at `τ` from the true-time solve (E1), so it carries `δ_o` too.
 
 Reading the terms:
 
-- **baseband** `arg s(τ)` — the message, sampled at emission time.
-- **carrier delay** `−2πf_tx(t−τ)` — the carrier phase accumulated over the light
-  path. Its time-derivative *is* the carrier Doppler; it emerges automatically as
-  `τ` walks with `t`. Note `t−τ = r/c + δ_o` (delay + clock).
-- **IF / de-ramp** `2π(f_tx−f_lo)t` — when the receiver tunes its LO away from the
-  source carrier, the residual sits at the intermediate frequency `f_tx−f_lo` in
-  baseband. For an on-tune receiver (`f_lo=f_tx`) this term vanishes.
-- **clock / LO** `−2πf_lo·δ_o(t)` — the receiver oscillator. **This single term is
-  both the timing error and the LO phase noise**: the LO is derived from the node
-  oscillator, so its phase error at frequency `f_lo` is exactly `2πf_lo·δ_o(t)`
-  (see §4.2). This is why clock and LO are one object.
+- **message** `arg s(τ)` — sampled at the emission time `τ`. Because `τ` is anchored
+  to `t_utc = t − δ_o` (E1), the clock shifts the **code phase** here.
+- **carrier delay** `−2πf_tx·r/c` — carrier phase over the light path; its
+  time-derivative *is* the carrier Doppler, emerging automatically as `τ` walks.
+- **clock** `−2πf_tx·δ_o` — the receiver oscillator, via the LO time base. It carries
+  the **same sign and the same `δ_o`** as the code-phase shift in `arg s(τ)`, so the
+  clock acts as a *common time bias* on code and carrier alike: the apparent delay is
+  `t − τ = r/c + δ_o`, i.e. **pseudorange `= r + c·δ_o`** (the standard GNSS
+  observation model [ME06; KH17]). This is why clock and LO are one object — one
+  `δ_o` drives sample timing and carrier together.
+- **IF / de-ramp** `2π(f_tx−f_lo)t` — for an off-tune LO the residual sits at the
+  intermediate frequency `f_tx−f_lo`; vanishes on-tune (`f_lo=f_tx`).
 
-For an on-tune receiver this collapses to the form in the code:
-$$ \varphi(t)=\arg s(\tau)\;-\;2\pi f_{tx}\Big(\tfrac{r(t)}{c}+\delta_o(t)\Big). $$
+(The `−2πf_tx·δ_o` clock term paired with the clock-time de-ramp is algebraically
+identical to the `−2πf_lo·δ_o` "LO phase-noise" form with the de-ramp expressed in
+true time `t_utc`; they differ only in bookkeeping. The code keeps the de-ramp on
+clock time, hence `f_tx`.)
 
-So one source contributes the continuous complex sample $A(t)\,|s(\tau)|\,e^{\,j\varphi(t)}$.
+For an on-tune receiver (`f_lo=f_tx`) this collapses to the form in the code:
+$$ \varphi=\arg s(\tau)\;-\;2\pi f_{tx}\Big(\tfrac{r(t)}{c}+\delta_o(t)\Big),\qquad \tau = t-\delta_o-\tfrac{r}{c}. $$
+
+So one source contributes the continuous complex sample $A\,|s(\tau)|\,e^{\,j\varphi}$.
 
 ---
 
@@ -157,8 +191,15 @@ $$ \delta_o(t)\;=\;\underbrace{c_0}_{\text{offset}} + \underbrace{m\,t}_{\text{d
   (TCXO ≈ 1e‑9…1e‑10, OCXO ≈ 1e‑12…1e‑13). Built as a sum of log-spaced AR(1)
   relaxations, self-calibrated (`clock::Flicker`).
 
-The LO phase error is `2πf_lo·δ_o(t)` — the same `δ_o`. So **clock = LO**: one
-process drives both the timing (`δ` in the delay) and the carrier phase noise.
+The `c₀ + m·t +` power-law decomposition is the standard frequency-stability model
+[Barnes71; IEEE1139]; the white-/flicker-FM synthesis (Allan-correct, causal,
+scale-invariant) follows the discrete power-law-noise method of [Kasdin92; Kasdin95].
+
+The **same `δ_o`** sets the sample-timing grid and the LO time base. So
+**clock = LO = sample clock**: one oscillator drives the sample timing — hence `τ`,
+the code phase and range, via `t_utc = t − δ_o` (§2.1) — **and** the carrier phase,
+via the `−2πf_tx·δ_o` term (§2.4). Because it is one `δ_o`, code and carrier see the
+*same* clock: a common time bias, pseudorange `= r + c·δ_o`.
 
 ### 4.3 RF/IF gain + AGC (post-sum) — `g`
 A linear scalar (dB) lifting the weak (FSPL-attenuated) signal into the ADC range:
@@ -172,16 +213,18 @@ $$ y \;\mapsto\; y\Big(1-\tfrac{4}{3}\,\frac{|y|^2}{P_{\text{IP3}}}\Big). \tag{E
 
 Small-signal linear; gain-compresses and produces IM3 at strong input. The binding
 spec for terrestrial rejection. (`P_IP3` from the dBm datasheet value, direct since
-amplitude² is power.)
+amplitude² is power.) This memoryless-cubic intercept model and the gain/NF/quantise
+front-end chain are the standard behavioural receiver model [Betz16; Borre07].
 
 ### 4.5 Thermal noise (post-sum) — `n(t)`
 Additive complex AWGN at the receiver floor $P_n=k_B T B$ (`B` = sample rate):
 $y \mapsto y + n,\ n\sim\mathcal{CN}(0,P_n)$.
 
 ### 4.6 The ADC — **the collapse**
-The only discrete, lossy, non-invertible step: sample on the nominal grid `t_n=n/f_s`
-(aperture jitter is a time-warp of this grid), clip to the full scale `±V_{fs}`, and
-quantise to `b` bits:
+The only discrete, lossy, non-invertible step: sample on the **clock** grid `t_n=n/f_s`
+(§2.1 — `t_n` is clock time; the geometry inside `φ`, `s(τ)`, `A` is evaluated at the
+true time `t_n − δ_o`, and aperture jitter is a further time-warp of this grid), clip
+to the full scale `±V_{fs}`, and quantise to `b` bits:
 $$ x[n]\;=\;Q_b\!\big(\mathrm{clip}_{\pm V_{fs}}(y(t_n))\big),\qquad Q_b(v)=\Delta\,\mathrm{round}(v/\Delta),\ \ \Delta=\frac{V_{fs}}{2^{\,b-1}-1}. \tag{E9} $$
 
 > **code** — `rx::PostOp::Adc`.
@@ -215,23 +258,65 @@ noise:
   `e^{-j[2π(f_tx-f_lo)t - 2πf_tx r̂/c]}` using a *predicted* range `r̂` (from
   ephemeris+position, or the orbit fit) → leaves the slow residual `-2πf·δ_o + noise`.
 - **Code-phase prediction** = inverse of the §2.1 time-warp: predict `τ` from the
-  broadcast ephemeris + surveyed position → the measured-minus-predicted code shift
-  is the clock.
-- **Clock recovery** = estimating `δ_o(t)` (E7): common-mode across all visible SVs
-  (geometry wiped), code resolves integer-ns, carrier carries the ps fraction.
+  broadcast ephemeris + surveyed position → the measured-minus-predicted code shift is
+  `δ_o` (the forward model put it there via `t_utc = t − δ_o`, so it is recoverable).
+- **Clock recovery** = estimating `δ_o(t)` (E7): since the clock is a common time bias
+  (pseudorange `= r + c·δ_o`, §2.4) it is common-mode across all visible SVs (geometry
+  wiped); code resolves integer-ns, carrier carries the ps fraction.
 
 Because forward and inverse are the *same* `φ`, `r`, `δ`, a simulator and an
 estimator built on this algebra cannot drift apart — and a result proved against the
 forward geometry (e.g. the light-time term, E1–E2) transfers directly to the inverse.
+This analysis-by-synthesis stance — invert the forward model directly rather than
+track loosely — is the basis of GNSS direct position estimation and vector tracking
+[Closas07]. **Caveat:** this is *internal* consistency, not fidelity. Any effect the forward model
+omits (§7) is invisible to this round-trip, so passing it proves the algebra, not the
+physics.
 
 ---
 
-## 7. Glossary
+## 7. Notable exclusions — what the model does *not* capture
+
+The channel is **vacuum truth**: geometry, free-space loss, antenna, one *receiver*
+clock, and a characterised front-end. The effects below are real but deliberately
+**not** modelled today. They are listed so an estimator knows what its "truth" omits,
+and so the self-consistency of §6 is not mistaken for real-world accuracy.
+
+- **Ionospheric propagation.** No group delay / phase advance / TEC. At UHF this is
+  the **largest** missing term — tens to >100 ns of group delay for typical TEC, i.e.
+  *larger* than the Sagnac correction the geometry does include (it scales as `1/f²`,
+  §2.2). The network's TEC / atmospheric-sounding ambitions live exactly here; today
+  the ionosphere is an *estimand*, not a simulated channel.
+- **Tropospheric delay.** No neutral-atmosphere delay — small versus the ionosphere
+  at these frequencies, but nonzero and growing toward the horizon.
+- **Transmitter clock.** `s(t)` is phase-perfect: the *source* oscillator is ideal
+  (no transmit `δ_o`, no transmit phase noise). A per-source clock is a clean
+  extension (a mirror of §4.2), but for downlink / TDOA we currently assume emitters
+  are stable. Adding the term doesn't hurt; we just hold it at zero.
+- **Polarisation.** No polarisation state or mismatch — the QFH is a scalar gain
+  `G_ant(θ)` (§4.1). No circular/linear mismatch loss, no Faraday rotation.
+- **Receiver noise figure.** Thermal noise is `k_B T B` at the floor (§4.5) with no
+  noise-figure / system-temperature budget, and is added *post-gain* — so absolute
+  SNR tracks the configured gain `g` rather than a cascade NF.
+- **Relativistic terms.** First-order (classical) Doppler only, via the light-time
+  walk of `τ`; second-order time dilation and gravitational frequency shift are
+  dropped (~`6e-10` fractional — borderline only for ps-class carrier-phase work).
+- **Multipath / scattering.** One direct ray per source; no ground bounce, no local
+  scatterers.
+
+None of these conflict with the "evaluate the operator, don't resample" discipline;
+they are scoped out, not overlooked. When one is added it slots in as another exact
+operator on `s(τ)` or another term in `δ`.
+
+---
+
+## 8. Glossary
 
 | symbol | meaning |
 |---|---|
-| `t` | receiver-local reception time of a sample |
-| `τ(t)` | emission time (light-time solve, §2.1) |
+| `t` | node-**clock** time of a sample (the timestamp `n/f_s`; the LO time base) |
+| `t_utc` | true (coordinate) reception time `= t − δ_o`; geometry is solved here |
+| `τ` | emission time (light-time solve at `t_utc`, §2.1) |
 | `s(t)` | transmitter complex baseband (§1) |
 | `f_tx`, `f_lo` | source RF carrier; receiver band LO |
 | `f_s`, `B` | band sample rate (= noise bandwidth) |
@@ -251,7 +336,7 @@ forward geometry (e.g. the light-time term, E1–E2) transfers directly to the i
 
 ---
 
-## 8. Equation ↔ code map
+## 9. Equation ↔ code map
 
 Each formula and the function that implements it. Source files are under
 `src/`; every function below carries a `(E…)` back-reference in its doc-comment.
@@ -271,3 +356,34 @@ Each formula and the function that implements it. Source files are under
 
 The reverse links live in the code: each listed function's doc-comment names its
 equation, so `grep -rn "SIGNAL_MODEL" src/` walks from code back to the maths.
+
+---
+
+## 10. References & relation to prior art
+
+No part of this model is novel physics. Each ingredient is standard; the contribution
+is the *integration* — exact wideband Doppler, a behavioural front end, a physical
+clock-noise process, and an explicit forward/inverse symmetry, kept as one continuous
+operator algebra whose only discrete step is the ADC. The literature each piece rests
+on:
+
+- **Doppler as time-warp / exact (wideband) channel** (§1, §2.1, §2.4)
+  - **[Bello63]** P. A. Bello, "Characterization of randomly time-variant linear channels," *IEEE Trans. Communications Systems*, 11(4):360–393, 1963.
+  - **[KW65]** E. J. Kelly and R. P. Wishner, "Matched-filter theory for high-velocity, accelerating targets," *IEEE Trans. Military Electronics*, MIL-9(1):56–69, 1965.
+  - **[VanTrees-III]** H. L. Van Trees, *Detection, Estimation, and Modulation Theory, Part III: Radar–Sonar Processing*, Wiley, 1971 (repr. 2001) — wideband ambiguity, Doppler as time-scaling.
+- **Light-time solve & Earth-rotation (Sagnac)** (§2.1–2.2)
+  - **[SPICE96]** C. H. Acton, "Ancillary data services of NASA's Navigation and Ancillary Information Facility (NAIF)," *Planetary and Space Science*, 44(1):65–70, 1996 — the ephemeris "reception-case" light-time construction.
+  - **[IERS2010]** G. Petit and B. Luzum (eds.), *IERS Conventions (2010)*, IERS Technical Note No. 36 — Earth-rotation/Sagnac and relativistic propagation terms.
+- **GNSS observation model & code/carrier Doppler** (§2.4, §4.2)
+  - **[ME06]** P. Misra and P. Enge, *Global Positioning System: Signals, Measurements, and Performance*, 2nd ed., Ganga-Jamuna Press, 2006 — pseudorange `ρ = r + c·δt`.
+  - **[KH17]** E. D. Kaplan and C. J. Hegarty (eds.), *Understanding GPS/GNSS: Principles and Applications*, 3rd ed., Artech House, 2017 — carrier and code Doppler as the shared `ṙ/c` scaling.
+- **Clock / oscillator noise** (§4.2)
+  - **[Barnes71]** J. A. Barnes et al., "Characterization of frequency stability," *IEEE Trans. Instrumentation and Measurement*, IM-20(2):105–120, 1971.
+  - **[IEEE1139]** IEEE Std 1139, *Definitions of Physical Quantities for Fundamental Frequency and Time Metrology — Random Instabilities*.
+  - **[Kasdin92]** N. J. Kasdin and T. Walter, "Discrete simulation of power law noise," *Proc. IEEE Frequency Control Symposium*, pp. 274–283, 1992.
+  - **[Kasdin95]** N. J. Kasdin, "Discrete simulation of colored noise and stochastic processes and 1/f^α power law noise generation," *Proc. IEEE*, 83(5):802–827, 1995.
+- **Receiver front-end (behavioural)** (§4.3–4.6)
+  - **[Betz16]** J. W. Betz, *Engineering Satellite-Based Navigation and Timing*, IEEE Press/Wiley, 2016 — noise figure, nonlinearity, quantisation effects.
+  - **[Borre07]** K. Borre, D. M. Akos, et al., *A Software-Defined GPS and Galileo Receiver*, Birkhäuser, 2007 — IF-sampling front end and quantisation loss.
+- **Forward-model inversion (analysis by synthesis)** (§6)
+  - **[Closas07]** P. Closas, C. Fernández-Prades, J. A. Fernández-Rubio, "Maximum likelihood estimation of position in GNSS," *IEEE Signal Processing Letters*, 14(5):359–362, 2007 — direct position estimation; the forward model inverted directly.

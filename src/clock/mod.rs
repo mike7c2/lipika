@@ -1,12 +1,15 @@
 //! Per-observer oscillator model — `SIGNAL_MODEL.md` E7 (`δ_o(t)`).
 //!
-//! `Δt(t) = c + m·t + ε(t)` where
+//! `Δt(t) = c + m·t + ε_wFM(t) + ε_fFM(t)` where
 //!   - `c` is the constant offset
 //!   - `m` is the static fractional frequency offset (ppm-scale)
-//!   - `ε(t)` is the white-FM Wiener walk, calibrated to a target σ_y(τ=1s)
+//!   - `ε_wFM(t)` is the white-FM Wiener walk, calibrated to a target σ_y(τ=1s)
+//!   - `ε_fFM(t)` is the flicker-FM (1/f) floor — the oscillator-grade knob,
+//!     a flat Allan floor built from a sum of log-spaced AR(1) relaxations
+//!     ([`Flicker`])
 //!
-//! Flicker and random-walk FM at longer τ are not modelled; over typical pass
-//! durations (seconds to minutes) white-FM + drift dominate.
+//! Random-walk FM at longer τ is not modelled; over typical pass durations
+//! (seconds to minutes) drift + white-FM + flicker dominate.
 
 use ndarray::Array1;
 use rand_distr::{Distribution, Normal};

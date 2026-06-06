@@ -174,19 +174,25 @@ pub fn accumulate_transmitter_contribution(
         "accumulator length must match per-sample arrays");
     profile::time("tx_contribution:mix", move || {
 
-    // Phase at the observer's antenna mixer at sample n:
-    //   φ_obs(n) = φ_src_emit(t_emit) - 2π · f_src · (t_local - t_emit)
-    //                                  + 2π · (f_src - f_lo_obs) · t_local
-    //                                  - 2π · f_lo_obs · Δt_o(t_local)
+    // Phase at the observer's antenna mixer at sample n (SIGNAL_MODEL.md E4).
+    // Fundamentally just (arriving carrier phase) − (LO phase). The arriving
+    // carrier was set at the source at emission, so it rides f_src·t_emit; the
+    // LO is the node oscillator, so it rides f_lo·t_local (clock time, exactly):
+    //   φ_obs(n) = arg s(t_emit) + 2π·f_src·t_emit − 2π·f_lo_obs·t_local
     //
-    // The first term is the source's baseband (already in `baseband`).
-    // The (t_local - t_emit) term = delay + Δt_o (since t_utc = t_local - Δt_o
-    // and t_emit = t_utc - delay). Carrier-phase Doppler is the time
-    // derivative of this and falls out automatically as we walk n.
+    // Rearranged into the delay/IF terms this loop evaluates:
+    //   φ_obs(n) = baseband(t_emit) − 2π·f_src·(t_local − t_emit)
+    //                                + 2π·(f_src − f_lo_obs)·t_local
     //
-    // For an observer tuned to the source carrier (f_src == f_lo_obs) this
-    // collapses to:
-    //   φ_obs(n) = baseband_phase(t_emit) - 2π · f_src · delay - 2π · f_src · Δt_o(t_local)
+    // The (t_local − t_emit) term = delay + Δt_o. Δt_o is in it because the
+    // emission solve was run against true time t_utc = t_local − Δt_o (the
+    // pipeline forms `t_utc_rel = t_local_rel − delta_t`), so t_emit =
+    // t_utc − delay. Hence the ONE Δt_o here drives both the code phase (via
+    // t_emit → baseband) and the carrier phase: pseudorange = r + c·Δt_o, GNSS.
+    // Carrier-phase Doppler is the time derivative of this, falling out as n walks.
+    //
+    // On-tune (f_src == f_lo_obs) this collapses to:
+    //   φ_obs(n) = baseband(t_emit) − 2π·f_src·(delay + Δt_o)
     //
     // We allow f_lo_obs ≠ f_src to keep the IF-tuning case open.
     let tau = std::f64::consts::TAU;

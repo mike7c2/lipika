@@ -204,13 +204,16 @@ error-budget studies.)
 
 ### Clock model
 
-Each receiver's clock offset is `Δt(t) = c + m·t + ε(t)`:
+Each receiver's clock offset is `Δt(t) = c + m·t + ε_wFM(t) + ε_fFM(t)`:
 
 - `initial_time_offset_s` — the constant offset `c`.
 - `frequency_offset_y0` — the static fractional frequency offset `m` (e.g.
   `0.5e-6` = 0.5 ppm).
-- `allan_deviation_1s` — calibrates `ε`, a white-FM Wiener walk (`0` ⇒ a perfect
-  deterministic clock).
+- `allan_deviation_1s` — calibrates `ε_wFM`, a white-FM Wiener walk (`0` ⇒ no
+  walk); Allan `σ_y ∝ τ^(−1/2)`.
+- `flicker_floor` — the flicker-FM (1/f) Allan-deviation floor, flat in `τ`: the
+  oscillator-grade knob for the irreducible close-in instability drift + white-FM
+  miss (TCXO ≈ 1e-9…1e-10, OCXO ≈ 1e-12…1e-13; `0` ⇒ no flicker).
 
 One clock realisation drives all of a receiver's bands: the clock-induced
 carrier phase on each band is the *same* `Δt(t)` scaled by that band's
