@@ -16,8 +16,9 @@ allows advanced modelling of clock noise effects.
 transmitter `s(t)`, the emission-time / Sagnac propagation, the receiver operator
 stack (antenna, oscillator δ(t)+LO, gain, IP3, the ADC collapse), and the full
 forward formula `x[n] = Q(clip(Σ …))` with every term discussed. Equations **(E1)–
-(E10)** each cite the function that implements them, and a §8 map ties the two
-directions together (`grep -rn SIGNAL_MODEL src/` walks code → maths).
+(E10)** each cite the function that implements them, and a §9 map ties the two
+directions together; the map is machine-checked (`req_satisfied("eq-eN")` traces,
+see [Requirements & traceability](#requirements--traceability)).
 
 ---
 
@@ -359,56 +360,31 @@ flowchart TD
 
 ---
 
-## Requirements & fidelity
+## Requirements & traceability
 
-The simulator is held to a small set of explicit requirements. Functional ones
-have objective tests (named where they exist); non-functional ones are
-benchmarked or assessed holistically. IDs are stable so a test matrix can refer
-to them.
+The simulator is held to an explicit, **machine-checked** requirement set in
+[`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md): fidelity principles (`fid-1`–`fid-5`),
+functional requirements (`fn-1`–`fn-7`, with child requirements per signal and
+trajectory model), non-functional requirements (`nf-1`–`nf-4`) and the signal-model
+equations (`eq-e1`–`eq-e10`, one per numbered equation of SIGNAL_MODEL.md). The
+IDs are stable so a test matrix can refer to them.
 
-### Fidelity principles
+Code claims to satisfy a requirement with `#[mantra_macros::req_satisfied("id")]`
+and a test claims to verify one with `#[mantra_macros::req_test("id")]` (both are
+compile-time no-ops). [mantra](https://github.com/mhatzl/mantra) joins those traces
+with a test run in which every test ran in its own process with its own LLVM
+coverage profile ([`tools/mantra-testrun`](tools/mantra-testrun)), so a requirement
+is **Verified** only when every test that traces to it passed *and* executed code
+that traces to it, not merely when the tags match. The pipeline first checks its
+own semantics against a fixture crate with known outcomes:
 
-- **FID-1 — Geometric, time-domain propagation.** All range/Doppler effects
-  arise from the emission-time solve and an algebraic `s(t)`, never from explicit
-  frequency-shifting. *(Cross-checked by GNSS-SDR Doppler.)*
-- **FID-2 — No accumulating phase error.** Per-sample carrier phase is computed
-  from absolute geometry in f64; error is bounded, non-growing with run length.
-- **FID-3 — No biasing trajectory error.** Trajectory interpolation stays within
-  a stated budget (sub-µm over a pass), no secular bias. *(Test:
-  `geometry::precomputed`.)*
-- **FID-4 — Physical, signal-independent noise.** Noise is thermal `k·T·B` fixed
-  at the receiver; SNR emerges from FSPL. *(Test:
-  `multi_transmitter_summation`.)*
-- **FID-5 — Physical, decomposable, coherent clock.** `Δt = c + m·t + ε`, with
-  one realisation driving all of a receiver's bands (single OCXO), so their
-  carrier phases are mutually coherent. *(Tests: `clock::*`.)*
+```bash
+scripts/trace.sh            # self-check → per-test coverage → mantra collect → mantra report; fails unless 34/34 Verified
+open mantra-report/index.html
+```
 
-### Functional requirements
-
-- **FN-1 — Linear accumulation.** A band's IQ is the linear sum of each
-  transmitter's contribution plus exactly one noise realisation. *(Test:
-  `multi_transmitter_summation`.)*
-- **FN-2 — Multi-band receivers off a shared clock.** Each receiver must
-  sample all channels defined using the same clock reference.
-- **FN-3 — Spectral band-overlap gating.** Only spectrally-overlapping
-  transmitters contribute; partial overlap is unfiltered (see Roadmap). *(Test:
-  `pipeline::tests`.)*
-- **FN-4 — Signal models.** CW, BPSK, GPS L1 C/A with selectable NAV
-  (`off` / `dummy` / `full` LNAV). *(Tests: `signal::ca_code`, `signal::gps_nav`.)*
-- **FN-5 — Trajectory models.** Stationary, TLE/SGP4, circular Keplerian, GPS
-  broadcast ephemeris (`rinex_nav`). *(Tests: `geometry::*`, `signal::gps_nav`.)*
-- **FN-6 — Self-describing output.** Raw `complex64` + JSON sidecar embedding
-  core fields, contributing transmitters/PRNs, and the full scene config.
-- **FN-7 — Determinism.** Same scene + seed ⇒ bit-for-bit identical output.
-
-### Non-functional requirements
-
-- **NF-1 — Throughput.** Tracked by the `iq_generation` Criterion bench.
-- **NF-2 — Bounded memory.** Independent of duration (streaming). *(Test:
-  `streaming_chunk_invariance`.)*
-- **NF-3 — Configurable parallelism.** `--threads`.
-- **NF-4 — Third-party interoperability.** Loads in NumPy, GNU Radio, GNSS-SDR
-  with no bespoke reader. *(Evidence: [Validation](#validation).)*
+[`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) has the tool evaluation (mantra vs
+tracey), the conventions, and the gaps the matrix exposed.
 
 ---
 

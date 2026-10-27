@@ -1,0 +1,21 @@
+// Manual verification records for requirements that no automated test can
+// discharge (flagged `Manual: true` in docs/REQUIREMENTS.md). mantra marks a
+// manual requirement Verified when a review lists it.
+{
+  reviews: [{
+    name: "Benchmark and third-party interoperability evidence",
+    utc_date: "2026-10-27T12:00utc+00",
+    authors: ["Mike Shaw"],
+    revisions: [{ nr: 1, authors: ["Mike Shaw"], comment: "Initial record, taken from README.md § Validation." }],
+    requirements: [
+      {
+        id: "nf-1",
+        comment: "Throughput is tracked by the Criterion bench `benches/iq_generation.rs` (`cargo bench`); the bench function carries a req_link trace. Not a pass/fail test, so verified by this record.",
+      },
+      {
+        id: "nf-4",
+        comment: "GNSS-SDR (independent SDR receiver) loads the raw complex64 output of dual_band.toml, gps_fix_synthetic.toml and gps_real_tle.toml with no bespoke reader: all PRNs acquire, track, decode LNAV and produce a metre-level position fix (README.md § Validation, gnss-sdr.conf, examples/gnss-sdr-*.conf). NumPy loads via np.fromfile(dtype=np.complex64).",
+      },
+    ],
+  }],
+}

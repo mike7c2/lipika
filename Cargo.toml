@@ -43,6 +43,10 @@ anyhow = "1.0"
 log = "0.4"
 env_logger = "0.11"
 
+# Requirement tracing (mantra): compile-time-only attribute macros that mark
+# which requirement an item satisfies / a test verifies. Zero runtime cost.
+mantra-macros = "0.9"
+
 # Datetime helpers (TLE epoch parsing).
 chrono = "0.4"
 

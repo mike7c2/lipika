@@ -31,6 +31,7 @@ pub struct GpsTime {
 impl GpsTime {
     /// Convert a UTC unix time to GPS time. `utc_offset_s` is GPS−UTC (leap
     /// seconds; 18 for the current era).
+    #[mantra_macros::req_satisfied("fn-4-lnav")]
     pub fn from_unix(unix: f64, utc_offset_s: f64) -> Self {
         let gps = unix - GPS_EPOCH_UNIX + utc_offset_s;
         let week = (gps / SECONDS_PER_WEEK).floor();
@@ -88,6 +89,7 @@ impl Ephemeris {
     /// scene epoch (`scene_epoch_unix`); the closed-form mapping reproduces the
     /// trajectory's ECEF positions under the IS-GPS-200 SV-position algorithm
     /// (given the shared μ and Ω̇ₑ constants).
+    #[mantra_macros::req_satisfied("fn-4-lnav")]
     pub fn from_circular_keplerian(
         orbit: &CircularKeplerian,
         prn: u8,
@@ -132,6 +134,7 @@ impl Ephemeris {
     /// arbitrary trajectories (e.g. SGP4/TLE). Reproduces the position exactly
     /// at `toe`; away from `toe` it follows a two-body propagation, so the
     /// residual vs. the true orbit is the (informative) error metric.
+    #[mantra_macros::req_satisfied("fn-4-lnav")]
     pub fn from_trajectory(
         traj: &dyn Trajectory,
         prn: u8,
@@ -311,6 +314,7 @@ fn compute_checksum(source: u32, nib: bool) -> u32 {
 
 /// Encode one 30-bit word from 24 source data bits and the previous word's
 /// `D29*`/`D30*`. `solve_tbits` is set for words 2 and 10.
+#[mantra_macros::req_satisfied("fn-4-lnav")]
 fn encode_word(d_src: &[u8; 24], d29p: u8, d30p: u8, solve_tbits: bool) -> [u8; 30] {
     // Pack into the 32-bit source word: D29* at bit31, D30* at bit30,
     // d1..d24 at bits 29..6.
@@ -327,6 +331,7 @@ fn encode_word(d_src: &[u8; 24], d29p: u8, d30p: u8, solve_tbits: bool) -> [u8; 
 }
 
 /// TLM (word 1): preamble 0x8B + (zero) message + integrity/reserved.
+#[mantra_macros::req_satisfied("fn-4-lnav")]
 fn tlm_word(d29p: u8, d30p: u8) -> ([u8; 30], (u8, u8)) {
     let mut w = WordBits::new();
     w.push_u(0x8B, 8);  // preamble
@@ -339,6 +344,7 @@ fn tlm_word(d29p: u8, d30p: u8) -> ([u8; 30], (u8, u8)) {
 
 /// HOW (word 2): TOW count of the next subframe, flags, subframe id, solved
 /// parity bits.
+#[mantra_macros::req_satisfied("fn-4-lnav")]
 fn how_word(tow_count: u32, subframe_id: u8, d29p: u8, d30p: u8) -> ([u8; 30], (u8, u8)) {
     let mut w = WordBits::new();
     w.push_u(tow_count as u64 & 0x1_FFFF, 17); // 17-bit TOW count
@@ -353,6 +359,7 @@ fn how_word(tow_count: u32, subframe_id: u8, d29p: u8, d30p: u8) -> ([u8; 30], (
 
 /// Assemble one 300-bit subframe (10 words). `data_words` supplies the 24
 /// source data bits for words 3–10 (word 10 gets its t-bits solved).
+#[mantra_macros::req_satisfied("fn-4-lnav")]
 fn build_subframe(
     subframe_id: u8,
     tow_count: u32,
@@ -543,6 +550,7 @@ fn zero_data_words() -> [[u8; 24]; 8] {
 /// first subframe starting at the scene epoch. The scene epoch should fall on
 /// a 6 s GPS boundary (true for any `epoch_unix` divisible by 6 with an
 /// integer leap-second offset) so subframe edges align with the TOW Z-count.
+#[mantra_macros::req_satisfied("fn-4-lnav")]
 pub fn lnav_bits(eph: &Ephemeris, gps_epoch: GpsTime, duration_s: f64) -> Vec<i8> {
     let base_z = (gps_epoch.sow / 6.0).round() as u32;
     let n_subframes = (duration_s / 6.0).ceil() as u32 + 1;
@@ -575,6 +583,7 @@ pub fn lnav_bits(eph: &Ephemeris, gps_epoch: GpsTime, duration_s: f64) -> Vec<i8
 /// Satellite ECEF position (m) computed from broadcast ephemeris at GPS
 /// seconds-of-week `t_sow`, per IS-GPS-200 §20.3.3.4.3. Used to validate that
 /// a derived ephemeris reproduces the simulated trajectory.
+#[mantra_macros::req_satisfied("fn-5-rinex-nav")]
 pub fn sv_position_ecef(eph: &Ephemeris, t_sow: f64) -> [f64; 3] {
     let a = eph.sqrt_a * eph.sqrt_a;
     let n0 = (GPS_MU / a.powi(3)).sqrt();
@@ -653,6 +662,7 @@ fn rinex_field(line: &str, start: usize) -> f64 {
 /// Parse GPS nav records from RINEX 3 text and return the `Ephemeris` for `prn`
 /// whose `toe` is closest to `near_unix`. Angles in RINEX nav are already in
 /// radians/SI, mapping straight onto [`Ephemeris`].
+#[mantra_macros::req_satisfied("fn-5-rinex-nav")]
 pub fn parse_rinex3_gps_nav(
     text: &str,
     prn: u8,
@@ -728,6 +738,7 @@ mod tests {
         recomputed == *word
     }
 
+    #[mantra_macros::req_test("fn-4-lnav")]
     #[test]
     fn parity_self_consistent_across_subframe() {
         let eph = sample_ephemeris();
@@ -744,6 +755,7 @@ mod tests {
         }
     }
 
+    #[mantra_macros::req_test("fn-4-lnav")]
     #[test]
     fn words_2_and_10_force_parity_zero() {
         let eph = sample_ephemeris();
@@ -754,6 +766,7 @@ mod tests {
         assert_eq!((w10[28], w10[29]), (0, 0), "word 10 must force parity 29,30 = 0");
     }
 
+    #[mantra_macros::req_test("fn-4-lnav")]
     #[test]
     fn tlm_preamble_present() {
         let (w1, _) = tlm_word(0, 0);
@@ -761,6 +774,7 @@ mod tests {
         assert_eq!(preamble, vec![1, 0, 0, 0, 1, 0, 1, 1], "0x8B preamble");
     }
 
+    #[mantra_macros::req_test("fn-4-lnav")]
     #[test]
     fn gps_time_roundtrip() {
         // 2024-06-01 16:54:00 UTC, a 6 s-aligned epoch.
@@ -814,6 +828,7 @@ mod tests {
         if v & sign != 0 { (v as i64) - (1i64 << len) } else { v as i64 }
     }
 
+    #[mantra_macros::req_test("fn-4-lnav")]
     #[test]
     fn lnav_bits_decode_back_to_the_ephemeris() {
         // Pack → emit → decode must round-trip the key ephemeris fields, the
@@ -890,6 +905,7 @@ mod tests {
         "     5.110800000000E+05 4.000000000000E+00\n",
     );
 
+    #[mantra_macros::req_test("fn-5-rinex-nav")]
     #[test]
     fn parses_rinex3_gps_nav_record() {
         let toe_unix = GPS_EPOCH_UNIX + 2317.0 * SECONDS_PER_WEEK + 518400.0 - 18.0;
@@ -907,6 +923,7 @@ mod tests {
         assert!(parse_rinex3_gps_nav(RINEX3, 7, toe_unix, 18.0).is_none(), "PRN 7 absent");
     }
 
+    #[mantra_macros::req_test("fn-5-rinex-nav")]
     #[test]
     fn broadcast_trajectory_matches_its_own_ephemeris() {
         let toe_unix = GPS_EPOCH_UNIX + 2317.0 * SECONDS_PER_WEEK + 518400.0 - 18.0;
@@ -919,6 +936,7 @@ mod tests {
         for k in 0..3 { assert!((p[k] - sv[k]).abs() < 1e-6, "axis {k}"); }
     }
 
+    #[mantra_macros::req_test("fn-4-lnav")]
     #[test]
     fn decoded_ephemeris_places_satellite_within_metres() {
         // The faithful end-to-end guard: decode the ephemeris from the bits as
@@ -956,6 +974,7 @@ mod tests {
         }
     }
 
+    #[mantra_macros::req_test("fn-4-lnav")]
     #[test]
     fn ephemeris_from_tle_is_consistent_over_window() {
         // A TLE-derived osculating ephemeris reproduces the SGP4 ECEF exactly
@@ -983,6 +1002,7 @@ mod tests {
         assert!(err < 5000.0, "60 s drift {err} m too large (frame mismatch?)");
     }
 
+    #[mantra_macros::req_test("fn-4-lnav")]
     #[test]
     fn ephemeris_reproduces_circular_trajectory() {
         use crate::geometry::Trajectory;

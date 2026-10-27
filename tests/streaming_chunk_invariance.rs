@@ -75,6 +75,7 @@ fn read_c64(dir: &Path, name: &str) -> Vec<u8> {
     std::fs::read(dir.join(format!("{name}.iq.c64"))).unwrap()
 }
 
+#[mantra_macros::req_test("fn-7", "nf-2")]
 #[test]
 fn chunked_output_is_byte_identical_regardless_of_chunk_size() {
     let scene: SceneConfig = toml::from_str(SCENE).unwrap();
@@ -100,6 +101,7 @@ fn chunked_output_is_byte_identical_regardless_of_chunk_size() {
     let _ = std::fs::remove_dir_all(&dir_many);
 }
 
+#[mantra_macros::req_test("fn-7", "eq-e10")]
 #[test]
 fn streamed_bytes_equal_in_memory_run_scene() {
     let scene: SceneConfig = toml::from_str(SCENE).unwrap();
@@ -125,6 +127,7 @@ fn streamed_bytes_equal_in_memory_run_scene() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[mantra_macros::req_test("fn-7", "nf-3")]
 #[test]
 fn thread_count_does_not_change_output() {
     // Fixed-order transmitter reduction ⇒ result independent of worker count.
