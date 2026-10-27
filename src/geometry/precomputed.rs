@@ -20,6 +20,8 @@ use ndarray::{Array1, Array2, ArrayView2};
 use super::Trajectory;
 
 /// Trajectory wrapper that samples-and-interpolates.
+// r[impl fid.3] 10 ms grid + linear interpolation, sub-µm over a pass
+// r[impl fn.5]
 pub struct PrecomputedTrajectory {
     /// First sample's absolute UTC time.
     t0_unix: f64,
@@ -112,6 +114,7 @@ mod tests {
     use crate::geometry::kepler::CircularKeplerian;
     use approx::assert_relative_eq;
 
+    // r[verify fid.3]
     #[test]
     fn precomputed_matches_underlying_to_sub_metre_at_100hz_grid() {
         let orbit = CircularKeplerian {

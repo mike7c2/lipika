@@ -44,6 +44,7 @@ impl Antenna {
     /// Voltage gain factor √G at arrival elevation `elev_deg` ∈ [−90, 90].
     /// Linear interpolation in dBi from horizon→zenith above the horizon, a flat
     /// back-lobe below, and **0 below `cutoff_deg`** (occlusion). (√G = 10^(dBi/20).)
+    // r[impl eq.e6] antenna gain pattern G_ant(θ)
     pub fn amplitude_at(&self, elev_deg: f64) -> f32 {
         if let Some(c) = self.cutoff_deg {
             if elev_deg < c { return 0.0; }
@@ -69,11 +70,13 @@ pub enum PostOp {
     /// is power, so this is direct from the dBm spec). Small-signal linear; models
     /// gain compression + IM3 at strong input. The binding spec for terrestrial
     /// rejection (antenna doc §R2). Valid up to ~compression; the ADC bounds extremes.
+    // r[impl eq.e8]
     Nonlinearity { iip3_w: f64 },
     /// The **ADC collapse** (`SIGNAL_MODEL.md` E9): clip to ±`full_scale_v`, then
     /// quantise to `bits` (symmetric mid-tread). The one discrete, lossy, non-invertible step
     /// in the entire receiver chain. Deterministic per sample ⇒ chunk/thread
     /// invariance is preserved.
+    // r[impl eq.e9]
     Adc { bits: u32, full_scale_v: f64 },
 }
 
@@ -136,6 +139,7 @@ impl RxChain {
 
     /// Forward-interpret the post-summation operators onto the band buffer, in
     /// chain order. No-op when the chain is empty.
+    // r[impl eq.e10] post-sum operator chain, in order
     pub fn apply_post_sum(&self, iq: &mut Array1<Complex32>) {
         for op in &self.post_sum {
             op.apply(iq);
@@ -152,6 +156,7 @@ mod tests {
     use super::*;
     use crate::config::{AdcConfig, FrontendConfig, NonlinearityConfig};
 
+    // r[verify eq.e10]
     #[test]
     fn empty_chain_is_identity() {
         let chain = RxChain::from_config(None);
@@ -162,6 +167,7 @@ mod tests {
         assert_eq!(iq, before);
     }
 
+    // r[verify eq.e9]
     #[test]
     fn adc_quantises_to_levels_and_clips() {
         // 4-bit ADC, full scale ±1 V: 7 positive levels, LSB = 1/7.
@@ -187,6 +193,7 @@ mod tests {
         assert_eq!(iq[1], Complex32::new(1.0, -1.0)); // clipped
     }
 
+    // r[verify eq.e6]
     #[test]
     fn antenna_pattern_peaks_at_zenith_and_rejects_back() {
         let a = Antenna { peak_dbi: 3.9, horizon_dbi: -3.0, fb_db: 8.5, cutoff_deg: None };
@@ -202,6 +209,7 @@ mod tests {
         assert_eq!(ac.amplitude_at(45.0), a.amplitude_at(45.0), "above cutoff unchanged");
     }
 
+    // r[verify eq.e10]
     #[test]
     fn gain_scales_linearly() {
         let chain = RxChain::from_config(Some(&FrontendConfig {
@@ -215,6 +223,7 @@ mod tests {
         assert!((iq[0].re - 1.0).abs() < 1e-5 && (iq[0].im + 2.0).abs() < 1e-5);
     }
 
+    // r[verify eq.e8]
     #[test]
     fn nonlinearity_is_linear_small_and_compresses_large() {
         // IIP3 = 0 dBm = 1 mW. Small signal (|x|² ≪ Pᵢₚ₃) passes ~unchanged;

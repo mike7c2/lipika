@@ -59,6 +59,7 @@ const TX_TRAJECTORY_GRID_DT_S: f64 = 0.01;
 /// bandwidth; they overlap iff the gap between centres is less than the
 /// sum of the half-bandwidths. A zero-bandwidth (CW) transmitter still
 /// overlaps a band that straddles its tone.
+// r[impl fn.3] spectral band-overlap gate
 fn bands_overlap(
     tx_carrier_hz: f64, tx_bandwidth_hz: f64,
     band_lo_hz: f64, band_bandwidth_hz: f64,
@@ -348,6 +349,8 @@ pub fn run_scene(scene: &SceneConfig, rng_seed_base: u64) -> Result<Vec<Observer
 /// the (expensive) per-transmitter work is parallelised across `n_threads`
 /// (0 ⇒ all cores); chunks stay sequential to keep the clock walk and noise
 /// stream — and hence the output — bit-identical regardless of chunk size.
+// r[impl nf.2] chunked streaming to disk
+// r[impl nf.3] --threads worker pool
 pub fn run_scene_to_dir(
     scene: &SceneConfig,
     rng_seed_base: u64,
@@ -508,6 +511,12 @@ fn noise_seed(base: u64, work_idx: usize) -> u64 {
 /// Chunked, transmitter-parallel generation of one band, driving `sink`.
 /// **`SIGNAL_MODEL.md` E5 (superposition) + E10 (full forward: Σ + noise + the
 /// `RxChain` post-sum operators + ADC).**
+// r[impl fn.1] Σ contributions + one noise draw
+// r[impl fn.2] one ClockStream per receiver, shared across its bands
+// r[impl fn.6] output descriptor
+// r[impl fn.7] fixed-order reduction, seed-derived RNGs
+// r[impl eq.e5]
+// r[impl eq.e10]
 fn generate_band(
     receiver: &Receiver,
     r_idx: usize,
@@ -666,6 +675,7 @@ mod tests {
     const GNSS_LO: f64 = 1_575_420_000.0;
     const GNSS_BW: f64 = 2_048_000.0;
 
+    // r[verify fn.3]
     #[test]
     fn far_out_of_band_beacon_is_excluded() {
         // The 437 MHz ISS UHF beacon must NOT contribute to the GNSS band —
@@ -674,6 +684,7 @@ mod tests {
         assert!(!bands_overlap(437_000_000.0, beacon_bw, GNSS_LO, GNSS_BW));
     }
 
+    // r[verify fn.3]
     #[test]
     fn co_carrier_ca_code_is_included() {
         // A C/A transmitter at the L1 carrier overlaps the GNSS band.
@@ -681,6 +692,7 @@ mod tests {
         assert!(bands_overlap(GNSS_LO, ca_bw, GNSS_LO, GNSS_BW));
     }
 
+    // r[verify fn.3]
     #[test]
     fn edge_overlap_is_inclusive() {
         // A tone sitting exactly on the band edge counts as overlapping.
@@ -690,6 +702,7 @@ mod tests {
         assert!(!bands_overlap(edge + 1.0, 0.0, GNSS_LO, GNSS_BW));
     }
 
+    // r[verify fn.3]
     #[test]
     fn wideband_tx_can_reach_a_nearby_band() {
         // A wide emission whose skirts reach into the band overlaps even
@@ -698,6 +711,7 @@ mod tests {
         assert!(bands_overlap(centre, 20_000_000.0, GNSS_LO, GNSS_BW));
     }
 
+    // r[verify fid.1]
     #[test]
     fn truth_export_delay_matches_geometry() {
         // For a stationary tx/rx pair the exported delay must equal the

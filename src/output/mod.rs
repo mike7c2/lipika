@@ -52,6 +52,7 @@ impl ObserverOutput {
 
 /// Build the JSON sidecar value. Shared by the in-memory and streaming writers
 /// so the on-disk metadata is identical regardless of how the IQ was produced.
+// r[impl fn.6] JSON sidecar, shared by in-memory and streaming writers
 fn sidecar_json(
     name: &str,
     epoch_unix: f64,
@@ -73,6 +74,8 @@ fn sidecar_json(
 }
 
 /// Encode a complex64 slice as raw little-endian bytes into `writer`.
+// r[impl fn.6] raw little-endian complex64, no header
+// r[impl nf.4]
 fn write_complex64_into<W: Write>(writer: &mut W, iq: &Array1<Complex32>) -> Result<(), anyhow::Error> {
     let mut buf = [0u8; 8];
     for v in iq.iter() {
@@ -95,6 +98,7 @@ pub fn write_raw_complex64(path: &Path, iq: &Array1<Complex32>) -> Result<(), an
 /// (truncating any prior file), appends complex64 chunks as they are produced,
 /// then `finalize`s by flushing and writing the `<name>.iq.json` sidecar. Raw
 /// c64 is headerless, so there is no header to patch as samples accrue.
+// r[impl nf.2] append chunks; sidecar written at finalize
 pub struct StreamingC64Writer {
     writer: BufWriter<File>,
     dir: PathBuf,
@@ -147,6 +151,8 @@ impl StreamingC64Writer {
 mod tests {
     use super::*;
 
+    // r[verify fn.6]
+    // r[verify nf.4]
     #[test]
     fn raw_complex64_roundtrip_via_byte_check() {
         let path = std::env::temp_dir().join("lipika_raw_test.c64");

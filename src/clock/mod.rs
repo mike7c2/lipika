@@ -16,6 +16,8 @@ use rand_distr::{Distribution, Normal};
 use rand_xoshiro::Xoshiro256PlusPlus;
 use serde::{Deserialize, Serialize};
 
+// r[impl fid.5] the four clock terms, each independently configurable
+// r[impl eq.e7]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct NodeClockSpec {
     /// White-FM Allan deviation at τ = 1 s (dimensionless). Zero → no walk.
@@ -52,6 +54,7 @@ impl Default for NodeClockSpec {
 /// master rate would be ~10¹⁰ draws/pass for nothing; the streaming clock
 /// interpolates its δ. Self-calibrated at construction so the resulting δ has the
 /// configured Allan **floor**.
+// r[impl eq.e7] ε_fFM: flicker-FM floor
 struct Flicker {
     alpha: Vec<f64>,            // AR(1) decay per pole
     gain: Vec<f64>,             // √(1−α²) per pole (unit-variance drive)
@@ -240,6 +243,10 @@ impl NodeClock {
 ///
 /// Queries MUST be monotonically non-decreasing in time (which the pipeline's
 /// sample order guarantees); the generator cannot look backwards.
+// r[impl fid.5] one realisation per receiver, shared by its bands
+// r[impl fn.2]
+// r[impl eq.e7]
+// r[impl nf.2] forward-only generator, O(1) state
 pub struct ClockStream {
     start_epoch_unix: f64,
     master_rate_hz: f64,
@@ -346,6 +353,8 @@ mod tests {
     use approx::assert_relative_eq;
     use rand::SeedableRng;
 
+    // r[verify fid.5]
+    // r[verify eq.e7]
     #[test]
     fn flicker_fm_has_a_flat_allan_floor_at_the_configured_level() {
         // Pure flicker FM at 1e-10: the δ(t) Allan deviation should sit ~1e-10 and
@@ -365,6 +374,8 @@ mod tests {
         assert!((a8 / a1) > 0.45 && (a8 / a1) < 2.2, "not flat: σy(1)={a1:e} σy(8)={a8:e}");
     }
 
+    // r[verify fid.5]
+    // r[verify eq.e7]
     #[test]
     fn frequency_offset_produces_exact_linear_drift() {
         let spec = NodeClockSpec {
@@ -383,6 +394,8 @@ mod tests {
         );
     }
 
+    // r[verify fid.5]
+    // r[verify eq.e7]
     #[test]
     fn allan_deviation_recovers_to_target() {
         let spec = NodeClockSpec {
@@ -412,6 +425,7 @@ mod tests {
         );
     }
 
+    // r[verify nf.2]
     #[test]
     fn clock_stream_reproduces_node_clock_bit_for_bit() {
         // Same spec + seed + master rate ⇒ the streaming generator must equal
@@ -433,6 +447,7 @@ mod tests {
         }
     }
 
+    // r[verify fn.7]
     #[test]
     fn clock_stream_chunk_query_is_invariant() {
         // Querying Δt(t) sample-by-sample in one pass vs. in several restarts
@@ -461,6 +476,8 @@ mod tests {
         }
     }
 
+    // r[verify fid.5]
+    // r[verify fn.2]
     #[test]
     fn clock_stream_two_bands_are_coherent() {
         // Two bands of one receiver (same seed, same master rate) sampling at

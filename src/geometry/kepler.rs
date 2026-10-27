@@ -15,6 +15,7 @@ const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_146_7e-5;
 /// Minimal element set for a circular Keplerian orbit (no eccentricity,
 /// no argument-of-perigee; gives a GPS-like circle that the propagator
 /// can evaluate analytically without iteration).
+// r[impl fn.5.keplerian]
 #[derive(Debug, Clone, Copy)]
 pub struct CircularKeplerian {
     pub semi_major_axis_m: f64,
@@ -106,6 +107,7 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
+    // r[verify fn.5.keplerian]
     #[test]
     fn gps_altitude_orbit_distance_correct() {
         let gps_radius = 6_378_137.0 + 20_200_000.0;

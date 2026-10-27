@@ -64,6 +64,7 @@ fn generate_g2(tap_a: usize, tap_b: usize) -> Vec<i8> {
 }
 
 /// Returns the 1023-chip C/A sequence for `prn` as +1/-1.
+// r[impl fn.4.ca-code] IS-GPS-200 §3.3.2.1 Gold code
 pub fn ca_code(prn: usize) -> Vec<i8> {
     assert!((1..=32).contains(&prn), "PRN must be 1..32");
     let g1 = generate_g1();
@@ -118,6 +119,7 @@ enum Nav {
     Full(Vec<i8>),
 }
 
+// r[impl fn.4.ca-code] C/A chips × nav overlay (off / dummy / full)
 pub struct CaCodeSource {
     pub carrier_hz: f64,
     pub prn: usize,
@@ -151,6 +153,7 @@ impl CaCodeSource {
     /// C/A code carrying a fully-formed LNAV bit stream (see
     /// [`super::gps_nav`]). `lnav_bits` is the ±1 sequence at 50 bps starting
     /// at `epoch_rel_s`.
+    // r[impl fn.4.lnav]
     pub fn with_full_nav(carrier_hz: f64, prn: usize, epoch_rel_s: f64, lnav_bits: Vec<i8>) -> Self {
         let code = ca_code(prn);
         Self { carrier_hz, prn, epoch_rel_s, code, nav: Nav::Full(lnav_bits) }
@@ -193,6 +196,7 @@ impl SignalModel for CaCodeSource {
 mod tests {
     use super::*;
 
+    // r[verify fn.4.ca-code]
     #[test]
     fn first_ten_chips_of_prn_1_match_spec() {
         // IS-GPS-200 Table 3-Ia, octal 1440: first 10 chips of PRN 1 are
@@ -202,6 +206,7 @@ mod tests {
         assert_eq!(&code[..10], &expected, "PRN 1 first 10 chips diverge from IS-GPS-200");
     }
 
+    // r[verify fn.4.ca-code]
     #[test]
     fn pure_code_has_no_nav_overlay() {
         let src = CaCodeSource::new(1_575_420_000.0, 1, 0.0);
@@ -212,6 +217,7 @@ mod tests {
         assert_eq!(out[0].re, ca_code(1)[0] as f32);
     }
 
+    // r[verify fn.4.lnav]
     #[test]
     fn full_nav_overlays_the_supplied_bit_stream() {
         // First NAV bit is the 0x8B preamble MSB (1 → −1); the first chip
@@ -223,6 +229,7 @@ mod tests {
         assert_eq!(out[0].re, (ca_code(1)[0] * -1) as f32);
     }
 
+    // r[verify fn.4.ca-code]
     #[test]
     fn nav_preamble_is_0x8b_at_subframe_starts() {
         let nav = NavData { seed: 12345 };
@@ -237,6 +244,7 @@ mod tests {
         }
     }
 
+    // r[verify fn.4.ca-code]
     #[test]
     fn nav_overlay_multiplies_gold_chip() {
         let src = CaCodeSource::with_nav_data(1_575_420_000.0, 1, 0.0, 42);
@@ -251,6 +259,7 @@ mod tests {
         assert_eq!(out[0].re, expected);
     }
 
+    // r[verify fn.4.ca-code]
     #[test]
     fn nav_data_flips_within_a_subframe() {
         // The 292 payload bits must not be a constant run, or the Costas

@@ -20,6 +20,7 @@ struct Cli {
     #[arg(short, long)]
     output: PathBuf,
     /// Seed for the pipeline's per-observer RNG derivation.
+    // r[impl fn.7]
     #[arg(long, default_value_t = 0u64)]
     seed: u64,
     /// Backend: cpu (default) or gpu (requires --features gpu at build time).
@@ -27,9 +28,11 @@ struct Cli {
     backend: String,
     /// Streaming chunk size in samples. Peak memory ≈ chunk × (#in-band
     /// transmitters + few) × 8 B, flat in scene duration.
+    // r[impl nf.2]
     #[arg(long, default_value_t = lipika::pipeline::DEFAULT_CHUNK_SAMPLES)]
     chunk_samples: usize,
     /// Worker threads for the per-chunk transmitter fan-out (0 = all cores).
+    // r[impl nf.3]
     #[arg(long, default_value_t = 0usize)]
     threads: usize,
     /// If > 0, also write per-receiver geometric truth (delay, range,

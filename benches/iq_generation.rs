@@ -12,6 +12,7 @@ use lipika::geometry::{
 };
 use lipika::signal::ca_code::CaCodeSource;
 
+// r[verify nf.1] throughput benchmark for the contribution kernel
 fn one_sv_pass(c: &mut Criterion) {
     // Realistic single-SV chunk.
     let fs = 1.5e6;

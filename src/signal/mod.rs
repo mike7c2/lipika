@@ -21,6 +21,8 @@ pub mod cw;
 pub mod ca_code;
 pub mod gps_nav;
 
+// r[impl fn.4] algebraic s(t), evaluable at any emission time
+// r[impl fid.1]
 pub trait SignalModel: Send + Sync {
     /// Nominal centre frequency of the RF emission (Hz). The receiver
     /// will mix against its own LO at `(this − IF)` before recording IQ,
