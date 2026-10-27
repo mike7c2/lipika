@@ -138,6 +138,7 @@ impl Flicker {
     }
 
     /// Flicker δ at `elapsed_s`, linearly interpolated on the coarse grid.
+    #[mantra_macros::req_satisfied("eq-e7")]
     fn delta_at(&mut self, elapsed_s: f64) -> f64 {
         let x = elapsed_s.max(0.0) * FLICKER_RATE_HZ;
         let m0 = x.floor() as i64;
@@ -320,6 +321,7 @@ impl ClockStream {
 
     /// `Δt(t)` at an arbitrary UTC time, linearly interpolating the walk
     /// between the bracketing master-grid points. `t` must not go backwards.
+    #[mantra_macros::req_satisfied("fid-5", "fn-2", "eq-e7", "nf-2")]
     pub fn delta_t_at(&mut self, t_unix: f64) -> f64 {
         let elapsed = t_unix - self.start_epoch_unix;
         let x = elapsed * self.master_rate_hz;
@@ -346,6 +348,7 @@ mod tests {
     use approx::assert_relative_eq;
     use rand::SeedableRng;
 
+    #[mantra_macros::req_test("fid-5", "eq-e7")]
     #[test]
     fn flicker_fm_has_a_flat_allan_floor_at_the_configured_level() {
         // Pure flicker FM at 1e-10: the δ(t) Allan deviation should sit ~1e-10 and
@@ -365,6 +368,7 @@ mod tests {
         assert!((a8 / a1) > 0.45 && (a8 / a1) < 2.2, "not flat: σy(1)={a1:e} σy(8)={a8:e}");
     }
 
+    #[mantra_macros::req_test("fid-5", "eq-e7")]
     #[test]
     fn frequency_offset_produces_exact_linear_drift() {
         let spec = NodeClockSpec {
@@ -383,6 +387,7 @@ mod tests {
         );
     }
 
+    #[mantra_macros::req_test("fid-5", "eq-e7")]
     #[test]
     fn allan_deviation_recovers_to_target() {
         let spec = NodeClockSpec {
@@ -412,6 +417,7 @@ mod tests {
         );
     }
 
+    #[mantra_macros::req_test("nf-2")]
     #[test]
     fn clock_stream_reproduces_node_clock_bit_for_bit() {
         // Same spec + seed + master rate ⇒ the streaming generator must equal
@@ -433,6 +439,7 @@ mod tests {
         }
     }
 
+    #[mantra_macros::req_test("fn-7")]
     #[test]
     fn clock_stream_chunk_query_is_invariant() {
         // Querying Δt(t) sample-by-sample in one pass vs. in several restarts
@@ -461,6 +468,7 @@ mod tests {
         }
     }
 
+    #[mantra_macros::req_test("fid-5", "fn-2")]
     #[test]
     fn clock_stream_two_bands_are_coherent() {
         // Two bands of one receiver (same seed, same master rate) sampling at

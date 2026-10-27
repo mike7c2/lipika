@@ -12,6 +12,7 @@ use lipika::geometry::{
 };
 use lipika::signal::ca_code::CaCodeSource;
 
+#[mantra_macros::req_link("nf-1")]
 fn one_sv_pass(c: &mut Criterion) {
     // Realistic single-SV chunk.
     let fs = 1.5e6;

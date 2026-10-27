@@ -33,6 +33,7 @@ pub enum AnyTrajectory {
 impl AnyTrajectory {
     /// One-sample position query. The match is fully visible to the
     /// compiler so the variant body inlines into callers.
+    #[mantra_macros::req_satisfied("fn-5")]
     #[inline(always)]
     pub fn position_ecef(&self, t_unix: f64) -> [f64; 3] {
         match self {
@@ -85,5 +86,49 @@ pub trait Trajectory: Send + Sync {
             out[[2, i]] = p[2];
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_abs_diff_eq;
+
+    #[mantra_macros::req_test("fn-5")]
+    #[test]
+    fn any_trajectory_dispatch_matches_the_wrapped_trajectory() {
+        let t0 = 1_700_000_000.0;
+        let times = Array1::from(vec![t0, t0 + 1.5, t0 + 9.99]);
+        let orbit = kepler::CircularKeplerian {
+            semi_major_axis_m: 26_578_137.0,
+            inclination_deg: 55.0,
+            raan_deg: 0.0,
+            true_anomaly_deg_at_epoch: 30.0,
+            epoch_unix: t0,
+        };
+        let fixed = stationary::Stationary::from_geodetic(55.86, -4.25, 10.0);
+        let pre = precomputed::PrecomputedTrajectory::sample(&orbit, t0, 10.0, 0.01);
+
+        let expect_orbit: Vec<[f64; 3]> = times.iter().map(|&t| orbit.position_ecef(t)).collect();
+        let expect_pre: Vec<[f64; 3]> = times.iter().map(|&t| pre.position_ecef(t)).collect();
+        let expect_fixed = vec![fixed.position_ecef(t0); 3];
+
+        let wrapped = [
+            (AnyTrajectory::Stationary(fixed), expect_fixed),
+            (AnyTrajectory::Precomputed(pre), expect_pre),
+            (AnyTrajectory::Dyn(std::sync::Arc::new(orbit)), expect_orbit.clone()),
+        ];
+        for (any, expected) in &wrapped {
+            let batch = any.position_ecef_batch(&times);
+            for (i, &t) in times.iter().enumerate() {
+                let p = any.position_ecef(t);
+                assert_eq!(p, expected[i]);
+                for axis in 0..3 {
+                    assert_abs_diff_eq!(batch[[axis, i]], p[axis], epsilon = 1e-6);
+                }
+            }
+        }
+        // A moving source moves; an Earth-fixed one does not.
+        assert_ne!(expect_orbit[0], expect_orbit[2]);
     }
 }

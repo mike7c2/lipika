@@ -1,0 +1,28 @@
+// mantra requirement-tracing configuration — see docs/TRACEABILITY.md.
+//
+// Requirements: docs/REQUIREMENTS.md (mantra Markdown: `### `id`: Title`).
+// Traces: #[mantra_macros::req_satisfied] / #[req_test] / satisfy_req! in src/,
+//         tests/ and benches/.
+// Test run: cargo-nextest JUnit + cargo-llvm-cov Cobertura under
+//         target/nextest/default/, produced by scripts/trace.sh.
+{
+  name: "lipika",
+  products: [{
+    name: "lipika",
+    base: "main",
+    requirements: [{ path: "docs/REQUIREMENTS.md", source: "markup" }],
+    annotations: [
+      { path: "src/", source: "content", pattern: "*.rs" },
+      { path: "tests/", source: "content", pattern: "*.rs" },
+      { path: "benches/", source: "content", pattern: "*.rs" },
+    ],
+    reviews: [{ path: "reviews/", source: "schema" }],
+    test_runs: [{
+      path: "target/nextest/default",
+      source: {
+        test: { format: "junit", pattern: "*junit.xml" },
+        coverage: { format: "cobertura_loose", pattern: "*cobertura.xml" },
+      },
+    }],
+  }],
+}

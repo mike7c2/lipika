@@ -341,6 +341,11 @@ operator on `s(τ)` or another term in `δ`.
 Each formula and the function that implements it. Source files are under
 `src/`; every function below carries a `(E…)` back-reference in its doc-comment.
 
+The map is machine-checked: each function below carries a
+`#[mantra_macros::req_satisfied("eq-eN")]` trace, `docs/REQUIREMENTS.md` defines
+`eq-e1`–`eq-e10`, and `scripts/trace.sh` (mantra) reports whether a passing test
+executed each one — see `docs/TRACEABILITY.md`.
+
 | eq | what | code |
 |----|------|------|
 | **E1** | emission-time (light-time) solve | `channel::solve_emission_times_for` |

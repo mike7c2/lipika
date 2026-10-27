@@ -44,6 +44,7 @@ impl Antenna {
     /// Voltage gain factor √G at arrival elevation `elev_deg` ∈ [−90, 90].
     /// Linear interpolation in dBi from horizon→zenith above the horizon, a flat
     /// back-lobe below, and **0 below `cutoff_deg`** (occlusion). (√G = 10^(dBi/20).)
+    #[mantra_macros::req_satisfied("eq-e6")]
     pub fn amplitude_at(&self, elev_deg: f64) -> f32 {
         if let Some(c) = self.cutoff_deg {
             if elev_deg < c { return 0.0; }
@@ -78,6 +79,7 @@ pub enum PostOp {
 }
 
 impl PostOp {
+    #[mantra_macros::req_satisfied("eq-e8", "eq-e9")]
     fn apply(&self, iq: &mut Array1<Complex32>) {
         match *self {
             PostOp::Gain { db } => {
@@ -136,6 +138,7 @@ impl RxChain {
 
     /// Forward-interpret the post-summation operators onto the band buffer, in
     /// chain order. No-op when the chain is empty.
+    #[mantra_macros::req_satisfied("eq-e10")]
     pub fn apply_post_sum(&self, iq: &mut Array1<Complex32>) {
         for op in &self.post_sum {
             op.apply(iq);
@@ -152,6 +155,7 @@ mod tests {
     use super::*;
     use crate::config::{AdcConfig, FrontendConfig, NonlinearityConfig};
 
+    #[mantra_macros::req_test("eq-e10")]
     #[test]
     fn empty_chain_is_identity() {
         let chain = RxChain::from_config(None);
@@ -162,6 +166,7 @@ mod tests {
         assert_eq!(iq, before);
     }
 
+    #[mantra_macros::req_test("eq-e9")]
     #[test]
     fn adc_quantises_to_levels_and_clips() {
         // 4-bit ADC, full scale ±1 V: 7 positive levels, LSB = 1/7.
@@ -187,6 +192,7 @@ mod tests {
         assert_eq!(iq[1], Complex32::new(1.0, -1.0)); // clipped
     }
 
+    #[mantra_macros::req_test("eq-e6")]
     #[test]
     fn antenna_pattern_peaks_at_zenith_and_rejects_back() {
         let a = Antenna { peak_dbi: 3.9, horizon_dbi: -3.0, fb_db: 8.5, cutoff_deg: None };
@@ -202,6 +208,7 @@ mod tests {
         assert_eq!(ac.amplitude_at(45.0), a.amplitude_at(45.0), "above cutoff unchanged");
     }
 
+    #[mantra_macros::req_test("eq-e10")]
     #[test]
     fn gain_scales_linearly() {
         let chain = RxChain::from_config(Some(&FrontendConfig {
@@ -215,6 +222,7 @@ mod tests {
         assert!((iq[0].re - 1.0).abs() < 1e-5 && (iq[0].im + 2.0).abs() < 1e-5);
     }
 
+    #[mantra_macros::req_test("eq-e8")]
     #[test]
     fn nonlinearity_is_linear_small_and_compresses_large() {
         // IIP3 = 0 dBm = 1 mW. Small signal (|x|² ≪ Pᵢₚ₃) passes ~unchanged;
