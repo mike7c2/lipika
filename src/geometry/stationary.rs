@@ -6,6 +6,7 @@ use super::ecef::geodetic_to_ecef;
 use super::Trajectory;
 
 /// A point fixed in the ECEF frame.
+// r[impl fn.5.stationary]
 #[derive(Debug, Clone, Copy)]
 pub struct Stationary {
     pub position_ecef: [f64; 3],

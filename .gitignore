@@ -20,3 +20,6 @@ Cargo.lock
 experiments/build/
 __pycache__/
 *.pyc
+
+# tracey daemon state (spec-coverage tooling)
+.tracey/

@@ -1,0 +1,18 @@
+// tracey spec-coverage configuration — see docs/TRACEABILITY.md.
+// Requirements live in docs/REQUIREMENTS.md as `r[id]` markers; code claims
+// them with `// r[impl id]`, tests with `// r[verify id]`.
+specs (
+    {
+        name lipika
+        source_url https://github.com/sourcenetwork/lipika
+        include (docs/REQUIREMENTS.md)
+        impls (
+            {
+                name rust
+                include (src/**/*.rs)
+                exclude (target/**)
+                test_include (tests/**/*.rs benches/**/*.rs)
+            }
+        )
+    }
+)

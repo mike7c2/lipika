@@ -23,6 +23,7 @@ fn gmst_rad(t_unix: f64) -> f64 {
 }
 
 /// A satellite trajectory propagated by SGP4 from a TLE.
+// r[impl fn.5.tle] SGP4, TEME → ECEF
 pub struct TleTrajectory {
     sat: sgp4::Constants,
     epoch_unix: f64,
@@ -91,6 +92,7 @@ mod tests {
     const L1: &str = "1 26407U 00040A   26150.58242625  .00000046  00000+0  00000+0 0  9999";
     const L2: &str = "2 26407  54.8538 215.8617 0121278 302.3883 230.2243  2.00557636189594";
 
+    // r[verify fn.5.tle]
     #[test]
     fn gps_tle_gives_gps_altitude_and_consistent_velocity() {
         let t = TleTrajectory::from_tle(L1, L2).unwrap();

@@ -8,6 +8,7 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 
 use super::SignalModel;
 
+// r[impl fn.4.bpsk]
 pub struct BpskFrame {
     /// Total bit stream: sync word followed by payload, +1 / −1 valued.
     pub bits: Vec<i8>,
