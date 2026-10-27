@@ -298,6 +298,18 @@ pub fn add_awgn_at_power(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[mantra_macros::req_test("fid-4")]
+    #[test]
+    fn thermal_noise_floor_is_k_t_b() {
+        // 290 K over a 2.048 MHz Nyquist bandwidth: k·T·B ≈ 8.20e-15 W (−111 dBm).
+        let p = thermal_noise_power_w(290.0, 2.048e6);
+        assert!((p / (1.380_649e-23 * 290.0 * 2.048e6) - 1.0).abs() < 1e-12);
+        assert!((10.0 * (p * 1e3).log10() - (-110.9)).abs() < 0.1, "{} dBm", 10.0 * (p * 1e3).log10());
+        // Linear in both T and B.
+        assert_eq!(thermal_noise_power_w(580.0, 2.048e6), 2.0 * p);
+        assert_eq!(thermal_noise_power_w(290.0, 4.096e6), 2.0 * p);
+    }
     use crate::geometry::stationary::Stationary;
 
     #[mantra_macros::req_test("eq-e1", "eq-e2", "fid-1")]

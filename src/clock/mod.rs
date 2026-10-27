@@ -173,6 +173,9 @@ pub struct NodeClock {
 }
 
 impl NodeClock {
+    /// Materialises `δ(t) = c + m·t + ε_wFM(t)` on the master grid (the reference
+    /// against which [`ClockStream`] is checked bit-for-bit).
+    #[mantra_macros::req_satisfied("fid-5", "eq-e7")]
     pub fn new(
         spec: NodeClockSpec,
         start_epoch_unix: f64,
@@ -311,6 +314,7 @@ impl ClockStream {
 
     /// `Δt` exactly at integer master-grid index `k` (used for testing against
     /// [`NodeClock`] and as the exact-grid path).
+    #[mantra_macros::req_satisfied("fid-5", "eq-e7", "nf-2")]
     pub fn delta_t_at_master_index(&mut self, k: i64) -> f64 {
         self.advance_to(k.max(0));
         let eps = if k < 0 { 0.0 } else { self.eps_hi };
@@ -321,7 +325,7 @@ impl ClockStream {
 
     /// `Δt(t)` at an arbitrary UTC time, linearly interpolating the walk
     /// between the bracketing master-grid points. `t` must not go backwards.
-    #[mantra_macros::req_satisfied("fid-5", "fn-2", "eq-e7", "nf-2")]
+    #[mantra_macros::req_satisfied("fid-5", "fn-2", "fn-7", "eq-e7", "nf-2")]
     pub fn delta_t_at(&mut self, t_unix: f64) -> f64 {
         let elapsed = t_unix - self.start_epoch_unix;
         let x = elapsed * self.master_rate_hz;

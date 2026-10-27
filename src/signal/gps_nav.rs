@@ -31,6 +31,7 @@ pub struct GpsTime {
 impl GpsTime {
     /// Convert a UTC unix time to GPS time. `utc_offset_s` is GPS−UTC (leap
     /// seconds; 18 for the current era).
+    #[mantra_macros::req_satisfied("fn-4-lnav")]
     pub fn from_unix(unix: f64, utc_offset_s: f64) -> Self {
         let gps = unix - GPS_EPOCH_UNIX + utc_offset_s;
         let week = (gps / SECONDS_PER_WEEK).floor();
@@ -313,6 +314,7 @@ fn compute_checksum(source: u32, nib: bool) -> u32 {
 
 /// Encode one 30-bit word from 24 source data bits and the previous word's
 /// `D29*`/`D30*`. `solve_tbits` is set for words 2 and 10.
+#[mantra_macros::req_satisfied("fn-4-lnav")]
 fn encode_word(d_src: &[u8; 24], d29p: u8, d30p: u8, solve_tbits: bool) -> [u8; 30] {
     // Pack into the 32-bit source word: D29* at bit31, D30* at bit30,
     // d1..d24 at bits 29..6.
@@ -329,6 +331,7 @@ fn encode_word(d_src: &[u8; 24], d29p: u8, d30p: u8, solve_tbits: bool) -> [u8; 
 }
 
 /// TLM (word 1): preamble 0x8B + (zero) message + integrity/reserved.
+#[mantra_macros::req_satisfied("fn-4-lnav")]
 fn tlm_word(d29p: u8, d30p: u8) -> ([u8; 30], (u8, u8)) {
     let mut w = WordBits::new();
     w.push_u(0x8B, 8);  // preamble
@@ -341,6 +344,7 @@ fn tlm_word(d29p: u8, d30p: u8) -> ([u8; 30], (u8, u8)) {
 
 /// HOW (word 2): TOW count of the next subframe, flags, subframe id, solved
 /// parity bits.
+#[mantra_macros::req_satisfied("fn-4-lnav")]
 fn how_word(tow_count: u32, subframe_id: u8, d29p: u8, d30p: u8) -> ([u8; 30], (u8, u8)) {
     let mut w = WordBits::new();
     w.push_u(tow_count as u64 & 0x1_FFFF, 17); // 17-bit TOW count
@@ -355,6 +359,7 @@ fn how_word(tow_count: u32, subframe_id: u8, d29p: u8, d30p: u8) -> ([u8; 30], (
 
 /// Assemble one 300-bit subframe (10 words). `data_words` supplies the 24
 /// source data bits for words 3–10 (word 10 gets its t-bits solved).
+#[mantra_macros::req_satisfied("fn-4-lnav")]
 fn build_subframe(
     subframe_id: u8,
     tow_count: u32,

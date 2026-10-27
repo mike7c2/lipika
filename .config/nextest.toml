@@ -1,4 +1,0 @@
-# cargo-nextest profile. The JUnit report is what mantra imports as the test
-# run (pass/fail per test) — see docs/TRACEABILITY.md.
-[profile.default.junit]
-path = "junit.xml"

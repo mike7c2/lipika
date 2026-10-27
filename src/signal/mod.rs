@@ -21,7 +21,6 @@ pub mod cw;
 pub mod ca_code;
 pub mod gps_nav;
 
-#[mantra_macros::req_satisfied("fn-4", "fid-1")]
 pub trait SignalModel: Send + Sync {
     /// Nominal centre frequency of the RF emission (Hz). The receiver
     /// will mix against its own LO at `(this − IF)` before recording IQ,

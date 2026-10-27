@@ -90,6 +90,7 @@ impl NavData {
     /// every 300-bit subframe are the fixed `0x8B` preamble; the rest are
     /// deterministic pseudo-random flips (so the Costas loop sees regular
     /// phase inversions and never stalls on a constant run).
+    #[mantra_macros::req_satisfied("fn-4-ca-code")]
     fn bit_pm(&self, bit_idx: i64) -> i8 {
         let pos = bit_idx.rem_euclid(NAV_SUBFRAME_BITS);
         let bit = if pos < NAV_PREAMBLE_BITS.len() as i64 {

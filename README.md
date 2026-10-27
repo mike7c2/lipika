@@ -372,12 +372,14 @@ IDs are stable so a test matrix can refer to them.
 Code claims to satisfy a requirement with `#[mantra_macros::req_satisfied("id")]`
 and a test claims to verify one with `#[mantra_macros::req_test("id")]` (both are
 compile-time no-ops). [mantra](https://github.com/mhatzl/mantra) joins those traces
-with the test run — pass/fail per test plus line coverage — so a requirement is
-**Verified** only when a test that traces to it passed *and* executed the code
-that traces to it, not merely when the tags match:
+with a test run in which every test ran in its own process with its own LLVM
+coverage profile ([`tools/mantra-testrun`](tools/mantra-testrun)), so a requirement
+is **Verified** only when every test that traces to it passed *and* executed code
+that traces to it, not merely when the tags match. The pipeline first checks its
+own semantics against a fixture crate with known outcomes:
 
 ```bash
-scripts/trace.sh            # nextest + llvm-cov → mantra collect → mantra report; fails on any Unverified
+scripts/trace.sh            # self-check → per-test coverage → mantra collect → mantra report; fails unless 34/34 Verified
 open mantra-report/index.html
 ```
 
