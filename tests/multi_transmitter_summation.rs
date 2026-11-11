@@ -131,6 +131,7 @@ sample_rate_hz = 100000.0
 noise_power_w = 1.0e-30
 "#;
 
+#[mantra_macros::req_test("fid-2", "eq-e4")]
 #[test]
 fn clock_offset_survives_at_realistic_epoch() {
     let scene: SceneConfig = toml::from_str(TOML_CW_TWO_CLOCKS).unwrap();
@@ -155,6 +156,7 @@ fn clock_offset_survives_at_realistic_epoch() {
             recovered * 1e9);
 }
 
+#[mantra_macros::req_test("fn-4-bpsk")]
 #[test]
 fn bpsk_radiates_at_realistic_epoch() {
     let scene: SceneConfig = toml::from_str(TOML_BPSK).unwrap();
@@ -170,6 +172,7 @@ fn bpsk_radiates_at_realistic_epoch() {
              the baseband is silent (signal-epoch regression?)");
 }
 
+#[mantra_macros::req_test("fid-4")]
 #[test]
 fn noise_only_band_has_power_within_floor_tolerance() {
     let scene: SceneConfig = toml::from_str(TOML_NO_TX).unwrap();
@@ -183,6 +186,7 @@ fn noise_only_band_has_power_within_floor_tolerance() {
             "noise-only mean power {} W deviates >2% from 1e-15 W", mean_power);
 }
 
+#[mantra_macros::req_test("fn-1", "fid-4", "eq-e5")]
 #[test]
 fn band_iq_is_sum_of_per_transmitter_runs_plus_one_noise_draw() {
     // The architectural contract:

@@ -40,6 +40,7 @@ impl BpskFrame {
 impl SignalModel for BpskFrame {
     fn carrier_hz(&self) -> f64 { self.carrier_hz }
 
+    #[mantra_macros::req_satisfied("fn-4", "fn-4-bpsk")]
     fn evaluate_baseband_batch(&self, t_emit: &Array1<f64>) -> Array1<Complex32> {
         // Bit index = floor((t_emit - epoch) * bit_rate).
         let n_bits = self.bits.len() as i64;

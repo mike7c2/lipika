@@ -1,0 +1,14 @@
+{
+  name: "probe",
+  products: [{
+    name: "probe",
+    base: "main",
+    requirements: [{ path: "reqs/req.md", source: "markup" }],
+    annotations: [
+      { path: "src/", source: "content", pattern: "*.rs" },
+      { path: "tests/", source: "content", pattern: "*.rs" },
+    ],
+    reviews: [{ path: "reviews/", source: "schema" }],
+    test_runs: [{ path: "target/mantra", source: "schema", pattern: "*.json" }],
+  }],
+}

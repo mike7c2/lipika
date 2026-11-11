@@ -6,6 +6,7 @@ const WGS84_E2: f64 = WGS84_F * (2.0 - WGS84_F);
 
 /// Convert geodetic (latitude °, longitude °, elevation m above ellipsoid)
 /// to ECEF (m).
+#[mantra_macros::req_satisfied("fn-5-stationary")]
 pub fn geodetic_to_ecef(lat_deg: f64, lon_deg: f64, h_m: f64) -> [f64; 3] {
     let lat = lat_deg.to_radians();
     let lon = lon_deg.to_radians();
@@ -23,6 +24,7 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
+    #[mantra_macros::req_test("fn-5-stationary")]
     #[test]
     fn glasgow_matches_reference() {
         // Cross-checked against a reference WGS-84 geodetic→ECEF implementation:
@@ -34,6 +36,7 @@ mod tests {
         assert_relative_eq!(p[2],  5_255_718.21468305, max_relative = 1e-9);
     }
 
+    #[mantra_macros::req_test("fn-5-stationary")]
     #[test]
     fn equator_at_zero_longitude_lies_on_x_axis() {
         let p = geodetic_to_ecef(0.0, 0.0, 0.0);

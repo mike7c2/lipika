@@ -1,0 +1,24 @@
+// mantra requirement-tracing configuration — see docs/TRACEABILITY.md.
+//
+// Requirements: docs/REQUIREMENTS.md (mantra Markdown: `### `id`: Title`).
+// Traces:       #[mantra_macros::req_satisfied] / #[req_test] / #[req_link] in
+//               src/, tests/ and benches/.
+// Test run:     target/mantra/test-run.json, written by tools/mantra-testrun
+//               (scripts/trace.sh): one process and one LLVM coverage profile
+//               per test, so every test case carries the lines *it* executed.
+// Reviews:      reviews/*.json5 discharge the `Manual: true` requirements.
+{
+  name: "lipika",
+  products: [{
+    name: "lipika",
+    base: "main",
+    requirements: [{ path: "docs/REQUIREMENTS.md", source: "markup" }],
+    annotations: [
+      { path: "src/", source: "content", pattern: "*.rs" },
+      { path: "tests/", source: "content", pattern: "*.rs" },
+      { path: "benches/", source: "content", pattern: "*.rs" },
+    ],
+    reviews: [{ path: "reviews/", source: "schema" }],
+    test_runs: [{ path: "target/mantra", source: "schema", pattern: "*.json" }],
+  }],
+}

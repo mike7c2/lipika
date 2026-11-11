@@ -52,6 +52,7 @@ impl ObserverOutput {
 
 /// Build the JSON sidecar value. Shared by the in-memory and streaming writers
 /// so the on-disk metadata is identical regardless of how the IQ was produced.
+#[mantra_macros::req_satisfied("fn-6")]
 fn sidecar_json(
     name: &str,
     epoch_unix: f64,
@@ -73,6 +74,7 @@ fn sidecar_json(
 }
 
 /// Encode a complex64 slice as raw little-endian bytes into `writer`.
+#[mantra_macros::req_satisfied("fn-6", "nf-4")]
 fn write_complex64_into<W: Write>(writer: &mut W, iq: &Array1<Complex32>) -> Result<(), anyhow::Error> {
     let mut buf = [0u8; 8];
     for v in iq.iter() {
@@ -115,6 +117,7 @@ impl StreamingC64Writer {
     }
 
     /// Append one chunk of IQ to the raw file.
+    #[mantra_macros::req_satisfied("nf-2")]
     pub fn push_chunk(&mut self, chunk: &Array1<Complex32>) -> Result<(), anyhow::Error> {
         write_complex64_into(&mut self.writer, chunk)?;
         self.samples_written += chunk.len();
@@ -147,6 +150,7 @@ impl StreamingC64Writer {
 mod tests {
     use super::*;
 
+    #[mantra_macros::req_test("fn-6", "nf-4")]
     #[test]
     fn raw_complex64_roundtrip_via_byte_check() {
         let path = std::env::temp_dir().join("lipika_raw_test.c64");

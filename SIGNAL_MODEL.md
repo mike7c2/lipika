@@ -27,6 +27,8 @@ $$ s_{\text{RF}}(t) \;=\; \Re\!\Big[\, s(t)\, e^{\,j 2\pi f_{tx} t}\,\Big], \qqu
 |---|---|
 | CW tone (offset `f_b`) | $s(t)=e^{\,j2\pi f_b t}$ |
 | BPSK (bits `b_k`, rate `R`) | $s(t)=b_{\lfloor R t\rfloor}\in\{\pm1\}$ |
+| OOK (bits `b_k`, rate `R`) | $s(t)=b_{\lfloor R t\rfloor}\in\{0,1\}$ |
+| 16-QAM (symbols `a_k`, rate `R_s`) | $s(t)=a_{\lfloor R_s t\rfloor}\in\{\pm1,\pm3\}^2/\sqrt{10}$ |
 | GPS C/A (PRN, NAV `d`) | $s(t)=c_{\text{PRN}}(t)\,d(t)\in\{\pm1\}$ |
 
 The crucial property: **`s` is never pre-sampled.** Doppler, delay and clock all
@@ -340,6 +342,11 @@ operator on `s(τ)` or another term in `δ`.
 
 Each formula and the function that implements it. Source files are under
 `src/`; every function below carries a `(E…)` back-reference in its doc-comment.
+
+The map is machine-checked: each function below carries a
+`#[mantra_macros::req_satisfied("eq-eN")]` trace, `docs/REQUIREMENTS.md` defines
+`eq-e1`–`eq-e10`, and `scripts/trace.sh` (mantra) reports whether a passing test
+executed each one — see `docs/TRACEABILITY.md`.
 
 | eq | what | code |
 |----|------|------|

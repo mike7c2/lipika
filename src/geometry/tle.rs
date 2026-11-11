@@ -30,6 +30,7 @@ pub struct TleTrajectory {
 
 impl TleTrajectory {
     /// Build from the two TLE lines (the optional name line is not used).
+    #[mantra_macros::req_satisfied("fn-5-tle")]
     pub fn from_tle(line1: &str, line2: &str) -> anyhow::Result<Self> {
         let elements = sgp4::Elements::from_tle(None, line1.as_bytes(), line2.as_bytes())
             .map_err(|e| anyhow::anyhow!("TLE parse: {:?}", e))?;
@@ -91,6 +92,7 @@ mod tests {
     const L1: &str = "1 26407U 00040A   26150.58242625  .00000046  00000+0  00000+0 0  9999";
     const L2: &str = "2 26407  54.8538 215.8617 0121278 302.3883 230.2243  2.00557636189594";
 
+    #[mantra_macros::req_test("fn-5-tle")]
     #[test]
     fn gps_tle_gives_gps_altitude_and_consistent_velocity() {
         let t = TleTrajectory::from_tle(L1, L2).unwrap();

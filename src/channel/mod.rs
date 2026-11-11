@@ -38,6 +38,7 @@ const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_146_7e-5;
 /// own compiled copy with `T::position_ecef` inlined into the Newton
 /// inner loop. Callers usually go through the [`AnyTrajectory`]-dispatch
 /// helper below, but this one is exposed for hand-tuned codepaths.
+#[mantra_macros::req_satisfied("fid-1", "eq-e1", "eq-e2")]
 pub fn solve_emission_times_for<T: Trajectory + ?Sized>(
     source_traj: &T,
     observer_position_utc: &Array2<f64>,
@@ -126,6 +127,7 @@ pub fn solve_emission_times(
 /// trajectories at absolute time. `receiver_lo_carrier_hz` is the receiver-band
 /// LO. `tx_power_w` is the transmitter's EIRP in watts (FSPL). `accumulator` is
 /// `n`-long and is added to in place.
+#[mantra_macros::req_satisfied("fid-2", "eq-e3", "eq-e4")]
 pub fn accumulate_transmitter_contribution(
     accumulator: &mut Array1<Complex32>,
     signal: &dyn SignalModel,
@@ -234,6 +236,7 @@ pub fn accumulate_transmitter_contribution(
 /// Used by tests / benches; the pipeline uses
 /// [`accumulate_transmitter_contribution`] directly to avoid the
 /// allocation + second-pass.
+#[mantra_macros::req_satisfied("nf-1")]
 pub fn transmitter_contribution_at_receiver(
     signal: &dyn SignalModel,
     transmitter_traj: &AnyTrajectory,
@@ -265,6 +268,7 @@ pub const BOLTZMANN_J_PER_K: f64 = 1.380_649e-23;
 /// `P_noise = k · T · B`. The bandwidth is normally the receiver's
 /// sample rate (Nyquist), but you might pass a narrower value if the
 /// observation bandwidth is filtered further before sampling.
+#[mantra_macros::req_satisfied("fid-4")]
 pub fn thermal_noise_power_w(temperature_k: f64, bandwidth_hz: f64) -> f64 {
     BOLTZMANN_J_PER_K * temperature_k * bandwidth_hz
 }
@@ -277,6 +281,7 @@ pub fn thermal_noise_power_w(temperature_k: f64, bandwidth_hz: f64) -> f64 {
 /// (after FSPL) to this fixed noise floor.
 ///
 /// Mutates `iq` in place. Caller provides the RNG.
+#[mantra_macros::req_satisfied("fid-4")]
 pub fn add_awgn_at_power(
     iq: &mut Array1<Complex32>,
     noise_power_w: f64,
@@ -293,8 +298,21 @@ pub fn add_awgn_at_power(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[mantra_macros::req_test("fid-4")]
+    #[test]
+    fn thermal_noise_floor_is_k_t_b() {
+        // 290 K over a 2.048 MHz Nyquist bandwidth: k·T·B ≈ 8.20e-15 W (−111 dBm).
+        let p = thermal_noise_power_w(290.0, 2.048e6);
+        assert!((p / (1.380_649e-23 * 290.0 * 2.048e6) - 1.0).abs() < 1e-12);
+        assert!((10.0 * (p * 1e3).log10() - (-110.9)).abs() < 0.1, "{} dBm", 10.0 * (p * 1e3).log10());
+        // Linear in both T and B.
+        assert_eq!(thermal_noise_power_w(580.0, 2.048e6), 2.0 * p);
+        assert_eq!(thermal_noise_power_w(290.0, 4.096e6), 2.0 * p);
+    }
     use crate::geometry::stationary::Stationary;
 
+    #[mantra_macros::req_test("eq-e1", "eq-e2", "fid-1")]
     #[test]
     fn emission_solve_applies_earth_rotation_correction() {
         // GPS-altitude source with an east-west line of sight, where the Sagnac
@@ -326,6 +344,7 @@ mod tests {
             "linearised correction off from exact rotation: {solved} vs {exact}");
     }
 
+    #[mantra_macros::req_test("eq-e3", "eq-e6")]
     #[test]
     fn antenna_cutoff_occludes_below_horizon() {
         use crate::signal::ca_code::CaCodeSource;

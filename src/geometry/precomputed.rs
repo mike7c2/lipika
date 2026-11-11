@@ -37,6 +37,7 @@ impl PrecomputedTrajectory {
     ///
     /// Adds one extra cell on each side so the Newton-iteration initial
     /// guess `t_utc − 70 ms` can be answered without out-of-range clamping.
+    #[mantra_macros::req_satisfied("fid-3", "fn-5")]
     pub fn sample(
         inner: &dyn Trajectory,
         t0_unix: f64,
@@ -61,6 +62,7 @@ impl PrecomputedTrajectory {
 }
 
 impl Trajectory for PrecomputedTrajectory {
+    #[mantra_macros::req_satisfied("fid-3")]
     fn position_ecef(&self, t_unix: f64) -> [f64; 3] {
         let f = (t_unix - self.t0_unix) / self.dt_s;
         let lo = (f.floor() as isize).clamp(0, (self.n - 2) as isize) as usize;
@@ -112,6 +114,7 @@ mod tests {
     use crate::geometry::kepler::CircularKeplerian;
     use approx::assert_relative_eq;
 
+    #[mantra_macros::req_test("fid-3")]
     #[test]
     fn precomputed_matches_underlying_to_sub_metre_at_100hz_grid() {
         let orbit = CircularKeplerian {

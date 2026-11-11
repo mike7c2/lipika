@@ -78,6 +78,7 @@ impl CircularKeplerian {
 }
 
 impl Trajectory for CircularKeplerian {
+    #[mantra_macros::req_satisfied("fn-5-keplerian")]
     fn position_ecef(&self, t_unix: f64) -> [f64; 3] {
         let (p_eci, v_eci) = self.eci_at(t_unix);
         self.eci_to_ecef(t_unix, p_eci, v_eci).0
@@ -106,6 +107,7 @@ mod tests {
     use super::*;
     use approx::assert_relative_eq;
 
+    #[mantra_macros::req_test("fn-5-keplerian")]
     #[test]
     fn gps_altitude_orbit_distance_correct() {
         let gps_radius = 6_378_137.0 + 20_200_000.0;

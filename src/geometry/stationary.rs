@@ -12,6 +12,7 @@ pub struct Stationary {
 }
 
 impl Stationary {
+    #[mantra_macros::req_satisfied("fn-5-stationary")]
     pub fn from_geodetic(lat_deg: f64, lon_deg: f64, h_m: f64) -> Self {
         Self { position_ecef: geodetic_to_ecef(lat_deg, lon_deg, h_m) }
     }
