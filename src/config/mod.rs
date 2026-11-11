@@ -106,6 +106,17 @@ impl TransmitterConfig {
 pub enum SignalKind {
     Cw { baseband_offset_hz: f64 },
     Bpsk { bit_rate_bps: f64, payload_bits: usize, payload_seed: u64, sync_word: Vec<i8> },
+    /// On-off keying. `sync_word` is 0/1 valued (1 = carrier on); `tx_power_dbw`
+    /// is the keyed-on carrier power.
+    Ook { bit_rate_bps: f64, payload_bits: usize, payload_seed: u64, sync_word: Vec<u8> },
+    /// Square Gray-coded 16-QAM. `sync_word` is 0/1 bits, four per symbol;
+    /// `tx_power_dbw` is the average power over the constellation.
+    Qam16 {
+        symbol_rate_baud: f64,
+        payload_symbols: usize,
+        payload_seed: u64,
+        sync_word: Vec<u8>,
+    },
     CaCode {
         prn: usize,
         epoch_unix: f64,
@@ -140,6 +151,8 @@ impl SignalKind {
         match self {
             SignalKind::Cw { .. } => "cw",
             SignalKind::Bpsk { .. } => "bpsk",
+            SignalKind::Ook { .. } => "ook",
+            SignalKind::Qam16 { .. } => "qam16",
             SignalKind::CaCode { .. } => "ca_code",
         }
     }
@@ -149,11 +162,15 @@ impl SignalKind {
     ///
     /// - CW: a pure tone — effectively zero bandwidth.
     /// - BPSK: `2 × bit_rate` (null-to-null main lobe of the sinc).
+    /// - OOK: `2 × bit_rate` (same rectangular-pulse main lobe).
+    /// - 16-QAM: `2 × symbol_rate` (likewise, per symbol).
     /// - C/A: `2 × 1.023 MHz ≈ 2.046 MHz` (the 1.023 Mcps chipping rate).
     pub fn default_bandwidth_hz(&self) -> f64 {
         match self {
             SignalKind::Cw { .. } => 0.0,
             SignalKind::Bpsk { bit_rate_bps, .. } => 2.0 * bit_rate_bps,
+            SignalKind::Ook { bit_rate_bps, .. } => 2.0 * bit_rate_bps,
+            SignalKind::Qam16 { symbol_rate_baud, .. } => 2.0 * symbol_rate_baud,
             SignalKind::CaCode { .. } => 2.0 * crate::signal::ca_code::CA_CHIP_RATE_HZ,
         }
     }

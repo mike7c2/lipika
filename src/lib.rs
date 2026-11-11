@@ -4,7 +4,7 @@
 //!
 //! - [`geometry`] — ECEF math, observer locations, source trajectories
 //!   (stationary, TLE/SGP4, synthetic Keplerian).
-//! - [`signal`] — source signal generators (BPSK, CW, GPS C/A code, file-IQ).
+//! - [`signal`] — source signal generators (BPSK, OOK, 16-QAM, CW, GPS C/A code, file-IQ).
 //! - [`clock`] — per-observer oscillator model: constant offset, frequency
 //!   offset (ppm scale), and white-FM phase walk.
 //! - [`channel`] — free-space propagation (delay + Doppler via

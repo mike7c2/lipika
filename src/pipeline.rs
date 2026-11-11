@@ -42,6 +42,7 @@ use crate::geometry::{
 use crate::output::{ObserverOutput, StreamingC64Writer};
 use crate::signal::{
     bpsk::BpskFrame, ca_code::CaCodeSource, cw::ContinuousWave,
+    ook::OokFrame, qam16::Qam16Frame,
     gps_nav::{lnav_bits, parse_rinex3_gps_nav, Ephemeris, GpsBroadcastTrajectory, GpsTime},
     SignalModel,
 };
@@ -131,6 +132,20 @@ fn build_signal(
                 sync_word, *payload_bits, *bit_rate_bps,
                 0.0, cfg.carrier_hz, &mut rng,
             ))
+        }
+        SignalKind::Ook { bit_rate_bps, payload_bits, payload_seed, sync_word } => {
+            let mut rng = Xoshiro256PlusPlus::seed_from_u64(*payload_seed);
+            Arc::new(OokFrame::random(
+                sync_word, *payload_bits, *bit_rate_bps,
+                0.0, cfg.carrier_hz, &mut rng,
+            )?)
+        }
+        SignalKind::Qam16 { symbol_rate_baud, payload_symbols, payload_seed, sync_word } => {
+            let mut rng = Xoshiro256PlusPlus::seed_from_u64(*payload_seed);
+            Arc::new(Qam16Frame::random(
+                sync_word, *payload_symbols, *symbol_rate_baud,
+                0.0, cfg.carrier_hz, &mut rng,
+            )?)
         }
         SignalKind::CaCode { prn, epoch_unix, nav, nav_seed } => {
             // Signals are evaluated at epoch-relative emission times, so the

@@ -20,6 +20,8 @@ pub mod bpsk;
 pub mod cw;
 pub mod ca_code;
 pub mod gps_nav;
+pub mod ook;
+pub mod qam16;
 
 pub trait SignalModel: Send + Sync {
     /// Nominal centre frequency of the RF emission (Hz). The receiver

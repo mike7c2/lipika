@@ -1,3 +1,5 @@
+| `ook` | `bits[⌊(t − epoch)·bit_rate⌋] ∈ {0, 1}` | carrier keyed on/off; 0/1 sync word + pseudo-random payload; `tx_power_dbw` is the keyed-on power |
+| `qam16` | `symbols[⌊(t − epoch)·symbol_rate⌋]` | square Gray-coded 16-QAM, `{±1, ±3}²/√10`; 0/1 sync word (4 bits/symbol) + pseudo-random payload; `tx_power_dbw` is the average power |
 # Lipika
 
 Lipika is a multi-source, multi-observer RF propagation simulator.
@@ -235,8 +237,9 @@ A transmitter contributes to a band only if its occupied spectrum
 `[carrier ± bandwidth/2]` intersects the band's acceptance window
 `[lo ± bandwidth/2]`. This is what stops a far-out-of-band emitter (e.g. a
 437 MHz beacon) from being mixed down to a gigahertz IF and aliasing into a
-narrow GNSS band. Bandwidth defaults sensibly per signal kind (CW ≈ 0, BPSK
-≈ 2×bit_rate, C/A ≈ 2.046 MHz) and per band (= sample rate); both can be set
+narrow GNSS band. Bandwidth defaults sensibly per signal kind (CW ≈ 0, BPSK and
+OOK ≈ 2×bit_rate, 16-QAM ≈ 2×symbol_rate, C/A ≈ 2.046 MHz) and per band
+(= sample rate); both can be set
 explicitly with `bandwidth_hz`. Partial overlap is currently admitted
 unfiltered — see [Roadmap](#roadmap).
 

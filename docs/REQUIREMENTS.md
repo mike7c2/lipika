@@ -70,6 +70,18 @@ The `cw` kind MUST emit a single tone `exp(j·2π·f_offset·t)` at a configurab
 
 The `bpsk` kind MUST emit `bits[⌊(t − epoch)·bit_rate⌋]` where the bit stream is a configured sync word followed by a seeded pseudo-random payload, with the bit index taken relative to the scene epoch.
 
+### `fn-4-ook`: OOK model
+
+- **Parents:** ["fn-4"]
+
+The `ook` kind MUST emit `bits[⌊(t − epoch)·bit_rate⌋] ∈ {0, 1}` (carrier on at unit amplitude for 1, off for 0), where the bit stream is a configured 0/1 sync word followed by a seeded pseudo-random payload, with the bit index taken relative to the scene epoch. The transmit power is therefore the keyed-on carrier power.
+
+### `fn-4-qam16`: 16-QAM model
+
+- **Parents:** ["fn-4"]
+
+The `qam16` kind MUST emit `symbols[⌊(t − epoch)·symbol_rate⌋]` on the square constellation `{±1, ±3}²/√10` (unit mean power, so the transmit power is the average power), with four bits per symbol Gray-coded per axis (`00, 01, 11, 10 → −3, −1, +1, +3`; first bit pair selects I, second Q). The symbol stream is a configured 0/1 sync word of whole symbols followed by a seeded pseudo-random payload, with the symbol index taken relative to the scene epoch.
+
 ### `fn-4-ca-code`: GPS L1 C/A model
 
 - **Parents:** ["fn-4"]
