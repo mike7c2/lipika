@@ -13,7 +13,9 @@
 #      req_satisfied/req_test traces in src/, tests/, benches/, the reviews
 #      and the test run above.
 #   3. `mantra report`: write mantra-report/ (HTML + JSON) and print the
-#      requirement states. Exit non-zero if any requirement is not Verified.
+#      requirement states.
+#   4. mantra-verdict: parse the JSON report and exit non-zero if any
+#      requirement is not Verified (or the report does not add up).
 #
 # A requirement is Verified only when every test carrying req_test("id") passed
 # and executed at least one line of an item carrying req_satisfied("id") (or,
@@ -38,10 +40,19 @@ fi
 
 if [ "${SKIP_TESTS:-0}" != 1 ]; then
   echo "== test run with per-test-case coverage"
+  # mantra collects every *.json here; never let an earlier run stand in for
+  # this one.
+  rm -f target/mantra/*.json
   # "$@" is passed to `cargo test --no-run` (e.g. --release, --features ...).
-  cargo run --quiet --manifest-path "$tool/Cargo.toml" -- \
+  rc=0
+  cargo run --quiet --manifest-path "$tool/Cargo.toml" --bin mantra-testrun -- \
     --manifest-dir . --out target/mantra/test-run.json --name lipika-tests -- "$@" \
-    || echo "(some tests failed; mantra will report them as Failed)"
+    || rc=$?
+  case $rc in
+    0) ;;
+    1) echo "(some tests failed or lack coverage; mantra will not verify their requirements)" ;;
+    *) echo "mantra-testrun did not produce a test run (exit $rc); stopping"; exit 2 ;;
+  esac
 fi
 
 echo "== mantra collect + report"
@@ -51,23 +62,12 @@ rm -rf mantra-report       # mantra refuses to overwrite an existing report dire
 "$mantra" report --formats html --formats json --output-dir mantra-report/
 
 summary=mantra-report/products/lipika@main.json5
-reqs=mantra-report/products/lipika@main/requirements.json5
 echo
 echo "== requirement states (mantra-report/index.html for detail)"
 awk -f scripts/summary.awk "$summary"
 
-bad_ids() {
-  # ids inside the `failed: [...]`, `skipped: [...]` and `unverified: [...]`
-  # lists of requirements.json5
-  awk '/^    (failed|skipped|unverified): \[/ { if ($0 ~ /\]/) next; on=1; next }
-       on && /^    \],?$/ { on=0; next }
-       on' "$reqs" | grep -oE '^\s*id: "[^"]*"' | sed -E 's/^\s*id: "//; s/"$//'
-}
-bad=$(bad_ids | grep -c . || true)
-if [ "$bad" != 0 ]; then
-  echo
-  echo "$bad requirement(s) not verified:"
-  bad_ids | sed 's/^/  - /'
-  exit 1
-fi
-echo "all requirements verified"
+echo
+# Exit status is the script's: 1 if any requirement is not verified, 2 if the
+# report cannot be read or does not add up.
+cargo run --quiet --manifest-path "$tool/Cargo.toml" --bin mantra-verdict -- \
+  mantra-report/products/lipika@main

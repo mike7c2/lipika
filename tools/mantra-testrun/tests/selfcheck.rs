@@ -68,13 +68,14 @@ fn probe_requirements_resolve_to_documented_states() {
             .arg("--out")
             .arg(&test_run)
             .arg("--name")
-            .arg("probe-selfcheck"),
+            .arg("probe-selfcheck")
+            .args(["--timeout", "10"]),
         "mantra-testrun",
     );
     assert_eq!(
         out.status.code(),
         Some(1),
-        "mantra-testrun must exit 1 because p-3's test fails on purpose"
+        "mantra-testrun must exit 1 because p-3's test fails and hangs_past_timeout is killed"
     );
     assert!(test_run.is_file(), "test run JSON must be written even when tests fail");
 
@@ -88,7 +89,12 @@ fn probe_requirements_resolve_to_documented_states() {
             .unwrap_or_else(|| panic!("no test case ending in {suffix}"))
     };
     assert_eq!(state("p1_executes_one")["state"], "passed");
+    // p-3's test prints more than the kept log tail; it must still be "failed".
     assert_eq!(state("p3_fails_on_purpose")["state"], "failed");
+    let hung = state("hangs_past_timeout");
+    assert_eq!(hung["state"], "failed", "a test past --timeout is killed and failed");
+    assert_eq!(hung["properties"]["timed_out"], true);
+    assert!(hung["properties"]["coverage_error"].is_string(), "a killed test has no profile: {hung}");
     assert_eq!(state("p9_ignored")["state"], "skipped");
     assert_eq!(state("p5_verified_from_integration_test")["state"], "passed");
     // The traced test for p-2 must not have executed src/never.rs at all.
@@ -131,4 +137,26 @@ fn probe_requirements_resolve_to_documented_states() {
         "probe states differ from probe/reqs/req.md:\n  {}",
         mismatches.join("\n  ")
     );
+
+    // The gate scripts/trace.sh uses must name exactly the non-verified ones.
+    let out = Command::new(env!("CARGO_BIN_EXE_mantra-verdict"))
+        .arg(report.join("products/probe@main"))
+        .output()
+        .expect("run mantra-verdict");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "mantra-verdict must fail on the probe:\n{stdout}{}",
+        String::from_utf8_lossy(&out.stderr));
+    let mut flagged: Vec<String> = stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("  - "))
+        .map(|l| l.to_string())
+        .collect();
+    let mut expected: Vec<String> = EXPECTED
+        .iter()
+        .filter(|(_, s)| *s != "verified")
+        .map(|(id, s)| format!("{id} ({s})"))
+        .collect();
+    flagged.sort();
+    expected.sort();
+    assert_eq!(flagged, expected, "mantra-verdict output:\n{stdout}");
 }

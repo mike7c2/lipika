@@ -1,6 +1,7 @@
 # Fixture crate for mantra-testrun's self-check (tests/selfcheck.rs).
 # Every requirement in reqs/req.md has a known expected mantra state; one test
-# fails on purpose, so `cargo test` in this directory is expected to fail.
+# fails on purpose and one sleeps past the self-check's --timeout, so `cargo test`
+# in this directory is expected to fail (after ~2 minutes).
 [package]
 name = "probe"
 version = "0.1.0"

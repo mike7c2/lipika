@@ -67,7 +67,20 @@ mod tests {
     #[mantra_macros::req_test("p-3")]
     #[test]
     fn p3_fails_on_purpose() {
+        // More captured output than mantra-testrun keeps (8 KiB), so libtest's
+        // "running 1 test" header falls out of the kept tail: the state must
+        // still come out failed, not unknown.
+        for i in 0..400 {
+            println!("p3 noise line {i:04} ..........");
+        }
         assert_eq!(three(), 4, "deliberate failure for the self-check");
+    }
+
+    /// Never finishes within the self-check's `--timeout`; must be killed and
+    /// recorded as failed instead of hanging the run.
+    #[test]
+    fn hangs_past_timeout() {
+        std::thread::sleep(std::time::Duration::from_secs(120));
     }
 
     #[mantra_macros::req_test("p-6")]

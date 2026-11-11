@@ -382,7 +382,7 @@ that traces to it, not merely when the tags match. The pipeline first checks its
 own semantics against a fixture crate with known outcomes:
 
 ```bash
-scripts/trace.sh            # self-check → per-test coverage → mantra collect → mantra report; fails unless 34/34 Verified
+scripts/trace.sh            # self-check → per-test coverage → mantra collect → mantra report; fails unless every requirement is Verified
 open mantra-report/index.html
 ```
 

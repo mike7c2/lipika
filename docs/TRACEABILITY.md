@@ -35,8 +35,9 @@ A requirement is **Verified** when every test carrying `req_test("id")` passed
 and executed at least one line of an item carrying `req_satisfied("id")`; a
 Manual requirement is Verified when a review record lists it; a parent is
 Verified when all its non-optional children are. Anything else is Unverified or
-Failed and `scripts/trace.sh` exits non-zero. Current state: **34 / 34
-Verified** from 51 tests, 93 traces (41 satisfy, 51 verify, 1 link), 65
+Failed and `scripts/trace.sh` exits non-zero (the gate is
+`mantra-verdict`, which parses the JSON report and fails closed). Current state: **36 / 36
+Verified** from 59 tests, 101 traces (43 satisfy, 57 verify, 1 link), 71
 requirement-to-test verification pairs; every satisfy and every verify trace is
 executed by at least one test.
 
@@ -101,16 +102,23 @@ or set `MANTRA`). No nextest or cargo-llvm-cov. Config:
 [`mantra.json5`](../mantra.json5) (requirements, annotation paths, test-run
 import, reviews).
 
-[`tools/mantra-testrun`](../tools/mantra-testrun) is a ~500-line standalone
-crate: `cargo test --no-run` with `-Cinstrument-coverage` into its own target
-dir, `--list` per test binary, each test run alone with its own
-`LLVM_PROFILE_FILE`, `llvm-profdata merge` + `llvm-cov export -format=lcov`
-per test restricted to the package directory, and a mantra `TestRunSchema`
-JSON with one `test_cases[].covered_files` per test holding executed lines
-only (hits > 0) plus the SHA-256 of each covered file, so coverage from a
-stale tree cannot match current traces. mantra's own schema is used instead
-of JUnit + Cobertura because the well-known formats are imported per run, not
-per test case.
+[`tools/mantra-testrun`](../tools/mantra-testrun) is a standalone crate:
+`cargo test --no-run` into its own target dir with itself as
+`RUSTC_WORKSPACE_WRAPPER` adding `-Cinstrument-coverage` (so rustflags from
+env or cargo config are kept as they are), `--list` per test binary (a binary
+that writes no profile there is reported as uninstrumented), each test run
+alone with its own per-process `LLVM_PROFILE_FILE` and a wall-clock limit
+(`--timeout`, default 600 s; a test past it is killed and Failed),
+`llvm-profdata merge` + `llvm-cov export -format=lcov` per test restricted to
+the package directory, and a mantra `TestRunSchema` JSON with one
+`test_cases[].covered_files` per test holding executed lines only (hits > 0)
+plus the SHA-256 of each covered file *as it was built*: sources are hashed
+before the build, and if any changed by the end of the run no JSON is written,
+so coverage from one version of a file can never match another.
+`scripts/trace.sh` deletes the previous test run before starting and stops if
+`mantra-testrun` cannot produce one, so mantra never sees a stale run. mantra's
+own schema is used instead of JUnit + Cobertura because the well-known formats
+are imported per run, not per test case.
 
 Each run starts from a fresh `mantra.db`: the state is computed from the
 current tree and the current test run, with no history to lean on.
