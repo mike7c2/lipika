@@ -1,5 +1,3 @@
-| `ook` | `bits[⌊(t − epoch)·bit_rate⌋] ∈ {0, 1}` | carrier keyed on/off; 0/1 sync word + pseudo-random payload; `tx_power_dbw` is the keyed-on power |
-| `qam16` | `symbols[⌊(t − epoch)·symbol_rate⌋]` | square Gray-coded 16-QAM, `{±1, ±3}²/√10`; 0/1 sync word (4 bits/symbol) + pseudo-random payload; `tx_power_dbw` is the average power |
 # Lipika
 
 Lipika is a multi-source, multi-observer RF propagation simulator.
@@ -152,9 +150,12 @@ noise_temperature_k = 290.0
 
 Runnable examples live in [`examples/`](examples/):
 [`iss_uhf_pass.toml`](examples/iss_uhf_pass.toml) (a single UHF beacon seen by
-four UK receivers) and
+four UK receivers),
 [`dual_band.toml`](examples/dual_band.toml) (a UHF beacon plus six synthetic
-GPS-like satellites, observed on two bands off one clock).
+GPS-like satellites, observed on two bands off one clock) and
+[`all_modulations.toml`](examples/all_modulations.toml) (one transmitter of
+every signal kind — CW, OOK, BPSK, 16-QAM and C/A — side by side in a single
+8 MHz band).
 
 ### Signal models
 
@@ -163,7 +164,9 @@ Each transmitter's `kind` selects an algebraic model:
 | kind | algebraic form | notes |
 |---|---|---|
 | `cw` | `exp(j·2π·f_offset·t)` | single tone |
-| `bpsk` | `bits[⌊(t − epoch)·bit_rate⌋]` | sync word + pseudo-random payload |
+| `bpsk` | `bits[⌊(t − epoch)·bit_rate⌋]` | ±1 sync word + pseudo-random payload |
+| `ook` | `bits[⌊(t − epoch)·bit_rate⌋] ∈ {0, 1}` | carrier keyed on/off; 0/1 sync word + pseudo-random payload; `tx_power_dbw` is the keyed-on power |
+| `qam16` | `symbols[⌊(t − epoch)·symbol_rate⌋]` | square Gray-coded 16-QAM, `{±1, ±3}²/√10`; 0/1 sync word (4 bits/symbol) + pseudo-random payload; `tx_power_dbw` is the average power |
 | `ca_code` | `chips[⌊(t − epoch)·1.023e6⌋ mod 1023]` | GPS L1 C/A Gold code (IS-GPS-200) |
 
 `ca_code` carries a navigation-data overlay selected by `nav`:
