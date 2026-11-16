@@ -1,0 +1,91 @@
+# Every signal kind in one band: five ground transmitters a few km from a
+# single receiver, frequency-multiplexed across an 8 MHz capture at 915 MHz.
+#
+#   offset from LO    kind      occupied bandwidth
+#   −3.0 MHz          cw        tone
+#   −2.0 MHz          ook       100 kHz   (50 kbps)
+#   −1.0 MHz          bpsk      200 kHz   (100 kbps)
+#    0.0 MHz          qam16     200 kHz   (100 kBd = 400 kbps)
+#   +2.5 MHz          ca_code   2.046 MHz (1.023 Mcps)
+#
+# Everything is stationary, so there is no Doppler: a spectrogram shows the
+# five emissions as fixed stripes, and the 16-QAM signal on the LO comes out
+# as a clean (rotated) constellation after decimating to its symbol rate.
+# Bit/symbol counts fill the 1 s scene exactly.
+#
+#   cargo run --release --bin lipika -- \
+#       --config examples/all_modulations.toml --output ./out/ --seed 2026
+#
+# writes out/lab__ism_915.iq.c64 (8 M samples, 64 MB).
+
+[scene]
+epoch_unix = 1717260840.0
+duration_s = 1.0
+
+# ---------- transmitters ----------
+
+[[transmitter]]
+name = "tone"
+carrier_hz = 912_000_000.0
+tx_power_dbw = -10.0   # 100 mW
+kind = "cw"
+baseband_offset_hz = 0.0
+trajectory = { kind = "stationary_geodetic", lat_deg = 55.90, lon_deg = -4.25, h_m = 30.0 }
+
+[[transmitter]]
+name = "keyfob_ook"
+carrier_hz = 913_000_000.0
+tx_power_dbw = -10.0   # keyed-on carrier power; the average is ~3 dB lower
+kind = "ook"
+bit_rate_bps = 50_000.0
+payload_bits = 49_984   # 50 kbps × 1 s − 16 sync bits
+payload_seed = 1
+sync_word = [1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1]   # 0/1: 1 = carrier on
+trajectory = { kind = "stationary_geodetic", lat_deg = 55.86, lon_deg = -4.18, h_m = 30.0 }
+
+[[transmitter]]
+name = "beacon_bpsk"
+carrier_hz = 914_000_000.0
+tx_power_dbw = -10.0
+kind = "bpsk"
+bit_rate_bps = 100_000.0
+payload_bits = 99_968   # 100 kbps × 1 s − 32 sync bits
+payload_seed = 2
+sync_word = [-1, 1, 1, -1, 1, -1, -1, 1, 1, 1, 1, -1, -1, 1, -1, 1, -1, 1, -1, -1, 1, 1, -1, -1, 1, -1, 1, 1, -1, -1, -1, 1]   # ±1
+trajectory = { kind = "stationary_geodetic", lat_deg = 55.82, lon_deg = -4.25, h_m = 30.0 }
+
+[[transmitter]]
+name = "link_qam16"
+carrier_hz = 915_000_000.0
+tx_power_dbw = -10.0   # average power over the constellation
+kind = "qam16"
+symbol_rate_baud = 100_000.0
+payload_symbols = 99_996   # 100 kBd × 1 s − 4 sync symbols
+payload_seed = 3
+# 0/1 bits, four per symbol (I pair, Q pair; Gray: 00 01 11 10 → −3 −1 +1 +3).
+# These four symbols are the constellation's corners.
+sync_word = [0, 0, 0, 0,  0, 0, 1, 0,  1, 0, 1, 0,  1, 0, 0, 0]
+trajectory = { kind = "stationary_geodetic", lat_deg = 55.86, lon_deg = -4.32, h_m = 30.0 }
+
+[[transmitter]]
+name = "pseudolite_prn07"
+carrier_hz = 917_500_000.0
+tx_power_dbw = -10.0
+kind = "ca_code"
+prn = 7
+epoch_unix = 1717260840.0
+nav = "dummy"
+trajectory = { kind = "stationary_geodetic", lat_deg = 55.89, lon_deg = -4.20, h_m = 30.0 }
+
+# ---------- receiver ----------
+
+[[receiver]]
+name = "lab"
+trajectory = { kind = "stationary_geodetic", lat_deg = 55.86, lon_deg = -4.25, h_m = 10.0 }
+clock = { allan_deviation_1s = 1e-11 }
+
+[[receiver.band]]
+band_id = "ism_915"
+lo_carrier_hz = 915_000_000.0
+sample_rate_hz = 8_000_000.0
+noise_temperature_k = 290.0
