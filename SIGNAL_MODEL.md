@@ -208,6 +208,47 @@ $$ \boxed{\; r(t)\;=\;\sum_{i\in\text{sources}} A_i(t)\,s_i\big(\tau_i(t)\big)\,
 This is still an exact continuous function. Horizon occlusion enters here: a source
 below the receiver's local horizon is dropped (`A_i \to 0`).
 
+**Horizon gate (cost only, not part of the model).** A dropped source's term is
+exactly zero, so the renderer need not evaluate it. Where the antenna has a cutoff
+(§4.1), `pipeline::generate_band` cuts each chunk into stretches of 0.1 s (at least
+256 samples) and skips a transmitter for a stretch when its arrival elevation is
+*certainly* below the cutoff for every sample of it. The certainty is a bound on the
+very elevation the per-sample path computes — receiver position `P_o` at the sample
+instant, source position `P_s` at the solved emission time `τ` (E1), against the
+geocentric up `P_o/|P_o|`:
+
+- every `P_o` of the stretch lies in a ball of centre `O_c` (the first sample's
+  position) and radius `ρ_o` (measured on the stretch's own positions; 0 for an
+  Earth-fixed receiver);
+- every `τ` lies in `[min t_utc − L, max t_utc]` with the light-time bound
+  `L = (1.01·R_max + |O_c| + ρ_o)/c`, `R_max` the source's largest geocentric
+  distance (1.01 covers the Sagnac rotation of E2 for `L ≤ 100` s; beyond that the
+  gate declines);
+- the tabulated trajectory moves no faster than `v_max`, its longest 10 ms grid
+  segment over the grid step, so every `P_s` lies in a ball of centre `S_c` (the
+  position at the middle of that interval) and radius `ρ_s = v_max·(half the
+  interval) + 1 m`;
+- hence, with `d_c = S_c − O_c`, every elevation of the stretch satisfies
+
+$$ \theta \;\le\; \theta(d_c, O_c) \;+\; \arcsin\frac{\rho_s+\rho_o}{|d_c|} \;+\; \arcsin\frac{\rho_o}{|O_c|} . $$
+
+The stretch is skipped only if this bound plus a 10⁻³° rounding margin is below the
+cutoff; otherwise (near the cutoff, a trajectory kind with no speed bound, any
+non-finite input) the per-sample path decides sample by sample as before. For a LEO
+seen from the ground `ρ_s ≈ 0.65` km at ≥ 2000 km, a spread of about 0.02°: a
+satellite is handed to the per-sample path a fraction of a second before it reaches
+the cutoff. The bound uses the tabulated motion itself, not an orbit assumption, so it
+holds for every trajectory kind and for moving receivers. Skipping never changes a
+sample: the omitted term is `+0`, and adding `+0` to a sum that started at `+0` is
+exact in IEEE arithmetic; noise and clock draws are per band and per receiver, not
+per transmitter.
+
+> **code** — `channel::horizon::{receiver_stretches, certainly_below_cutoff,
+> kept_ranges}`, applied in `pipeline::generate_band` via `gated_contribution`;
+> `geometry::precomputed::PrecomputedTrajectory::{max_speed_m_s, max_radius_m}`.
+> Requirement `nf-5`; `tests/horizon_gate.rs` compares gated and ungated renders
+> byte for byte.
+
 ---
 
 ## 4. The receiver front-end — operators on `r(t)`
@@ -221,7 +262,9 @@ A gain on the arrival direction. The chosen self-phased QFH is azimuthally
 symmetric, so gain depends on elevation `θ` only:
 $$ G_{\text{ant}}(\theta)\;[\text{dBi}]=\begin{cases} G_{\text{horiz}} + (G_{\text{peak}}-G_{\text{horiz}})\,\theta/90^\circ & \theta\ge0\\[2pt] G_{\text{horiz}} - \text{F/B} & \theta<0\ \text{(back-lobe)} \end{cases} \tag{E6} $$
 applied as `√G` to each source's amplitude (§2.3). `θ` is the same arrival angle the
-horizon mask uses.
+horizon mask uses. With a cutoff elevation `θ_c` configured (`cutoff_deg`), `G = 0` for
+`θ < θ_c`: the source is occluded. That is also what lets the renderer skip a source
+that is certainly below `θ_c` (the horizon gate, §3).
 
 > **code** — `rx::Antenna::amplitude_at`; folded into the `geom_gain` pass of
 > `channel::accumulate_transmitter_contribution`.

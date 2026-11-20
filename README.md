@@ -301,6 +301,60 @@ Peak memory is roughly `chunk_samples × (in-band transmitters + few) × 8 bytes
 flat in duration. Smaller chunks use less memory; larger chunks amortise
 per-chunk setup.
 
+### Horizon gate
+
+A band whose front-end antenna has a `cutoff_deg` models occlusion: a
+transmitter below that elevation contributes exactly nothing. From one site
+only a few percent of a LEO constellation is above the horizon at once, so the
+renderer does not do per-sample work for the rest. Each chunk is cut into
+stretches of 0.1 s (at least 256 samples); for each in-band transmitter and
+stretch a constant-time test bounds the highest arrival elevation any sample of
+the stretch can have, and the stretch is skipped when that bound is below the
+cutoff. Render cost then follows the number of transmitters **in view**, not
+the number in the sky.
+
+- **It never changes a sample.** The test is conservative: it bounds the very
+  elevation the per-sample path computes (receiver position at the sample
+  instant, source at the solved emission time), using the largest speed found
+  in the transmitter's tabulated trajectory, a bound on the light time, and the
+  spread of the receiver's own positions over the stretch, plus a 0.001°
+  rounding margin ([SIGNAL_MODEL.md §3](SIGNAL_MODEL.md)). Anything that might
+  reach the cutoff inside the stretch goes through the per-sample path, which
+  decides sample by sample as before. For a LEO seen from the ground the bound
+  is about 0.02° wide, so a satellite is picked up a fraction of a second
+  before it rises. `tests/horizon_gate.rs` compares gated and ungated renders
+  byte for byte (rising, setting and horizon-grazing satellites, several
+  cutoffs, moving receiver, SGP4 and Earth-fixed transmitters, across chunk
+  sizes and thread counts).
+- **Only where occlusion is modelled.** With no antenna, or an antenna without
+  `cutoff_deg`, every transmitter is heard (through the Earth if need be) and
+  nothing is skipped.
+- It applies to scene renders and to `render_window` alike; there is nothing to
+  configure. `pipeline::run_scene_without_horizon_gate` and
+  `pipeline::render_window_without_horizon_gate` are the reference path the
+  gate is tested and timed against.
+
+What is left per out-of-view transmitter is its trajectory table (one orbit
+propagation per 10 ms of window, built at the start of every render: about
+4 ms and 290 kB per SGP4 transmitter per 120 s) and one gate test per 0.1 s.
+
+Measured with `examples/sky_throughput.rs` (below) on a 32-thread x86-64
+desktop: N burst-gated BPSK beacons on made-up LEO orbits, all on 401.15 MHz,
+one Glasgow receiver at 48 kHz with a 0° cutoff, a 120 s window. Emulated
+seconds per wall-clock second, gate off → gate on:
+
+| transmitters (in view during the window) | 1 thread | 4 threads |
+|---|---|---|
+| 1 (0) | 168 → 446 | 187 → 470 |
+| 12 (0) | 21.6 → 346 | 73.5 → 476 |
+| 50 (1) | 5.4 → 104 | 18.8 → 122 |
+| 200 (8) | 1.4 → 23.7 | 5.0 → 55.4 |
+| 200 (16), 600 s window | 1.4 → 25.2 | 4.9 → 56.4 |
+
+Single runs, including the trajectory tabulation and a hash of every sample.
+With the gate on, the 200-transmitter time is the per-sample cost of the
+roughly seven satellites above the horizon at any moment.
+
 ### Determinism
 
 Output is **bit-for-bit reproducible** for a given scene and seed, and identical
@@ -359,7 +413,13 @@ let summary = render_window(&sky, &receiver, &band, 1_717_260_690.0, 600.0, &opt
   nothing from more threads. Run one render per receiver side by side instead.
 - **Horizon.** As everywhere in lipika, a satellite below the horizon is only
   blocked if the band's front-end antenna has a `cutoff_deg` (0.0 = the
-  geometric horizon); without one it is heard through the Earth.
+  geometric horizon); without one it is heard through the Earth. With one, the
+  [horizon gate](#horizon-gate) skips the satellites that are out of view, so a
+  sky of hundreds costs about as much as the handful above the horizon.
+- **Summary.** `WindowSummary::contributing_transmitters` lists the sky's
+  transmitters whose spectrum overlaps the band; `visible_transmitters` lists
+  those of them that were at or above the antenna cutoff for at least one
+  emitted sample (all of them if there is no cutoff).
 - **Window starts.** A Unix time near the present is an f64 with ~238 ns
   steps. Windows whose starts differ by an amount that is exact in f64 at that
   magnitude and a whole number of samples (whole seconds are the easy case)
@@ -371,6 +431,11 @@ let summary = render_window(&sky, &receiver, &band, 1_717_260_690.0, 600.0, &opt
 
 `cargo run --release --example window_throughput` times a 600 s, 48 kHz window
 of the example sky over a real pass.
+`cargo run --release --example sky_throughput -- <sky.toml> [threads] [duration_s] [--no-gate]`
+times any sky file for a Glasgow receiver with a horizon-cutoff antenna
+(401.15 MHz, 48 kHz, from Unix 1717260690) and prints the emulated seconds per
+wall-clock second, how many transmitters were above the horizon during the
+window, and a hash of the IQ (the same with and without `--no-gate`).
 
 ---
 
@@ -469,7 +534,7 @@ flowchart TD
 The simulator is held to an explicit, **machine-checked** requirement set in
 [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md): fidelity principles (`fid-1`–`fid-5`),
 functional requirements (`fn-1`–`fn-10`, with child requirements per signal and
-trajectory model), non-functional requirements (`nf-1`–`nf-4`) and the signal-model
+trajectory model), non-functional requirements (`nf-1`–`nf-5`) and the signal-model
 equations (`eq-e1`–`eq-e11`, one per numbered equation of SIGNAL_MODEL.md). The
 IDs are stable so a test matrix can refer to them.
 

@@ -164,6 +164,10 @@ The number of worker threads for the per-chunk transmitter fan-out MUST be confi
 
 Output MUST load in NumPy, GNU Radio and GNSS-SDR with no bespoke reader, which the headerless interleaved-f32 format of fn-6 provides. End-to-end evidence is the GNSS-SDR validation in the README (acquisition, tracking and position fix); it is a manual check, not an automated test.
 
+### `nf-5`: Horizon gate
+
+Where a band's antenna has a cutoff elevation (occlusion is modelled), the renderer MUST NOT do per-sample work for a transmitter over a stretch of samples during which it is certainly below that cutoff, so that render cost follows the number of transmitters in view rather than the number in the sky. The gate MUST NOT change any output sample: it MAY skip a stretch only when a bound on the arrival elevation the per-sample path would compute (eq-e3, eq-e6), taken over every sample of the stretch, is below the cutoff, and MUST fall through to the per-sample path whenever it cannot bound it (a transmitter near the cutoff, a trajectory without a speed bound, any non-finite input). With no cutoff nothing may be skipped. fn-7 (determinism, chunk-size and thread-count invariance) applies with the gate on.
+
 ## Signal-model equations
 
 These tie the numbered equations of [SIGNAL_MODEL.md](../SIGNAL_MODEL.md) to
