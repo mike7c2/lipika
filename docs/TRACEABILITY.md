@@ -36,8 +36,8 @@ and executed at least one line of an item carrying `req_satisfied("id")`; a
 Manual requirement is Verified when a review record lists it; a parent is
 Verified when all its non-optional children are. Anything else is Unverified or
 Failed and `scripts/trace.sh` exits non-zero (the gate is
-`mantra-verdict`, which parses the JSON report and fails closed). Current state: **36 / 36
-Verified** from 59 tests, 101 traces (43 satisfy, 57 verify, 1 link), 71
+`mantra-verdict`, which parses the JSON report and fails closed). Current state: **40 / 40
+Verified** from 77 tests, 125 traces (53 satisfy, 71 verify, 1 link), 102
 requirement-to-test verification pairs; every satisfy and every verify trace is
 executed by at least one test.
 
@@ -241,6 +241,22 @@ Does not prove:
   `nf-4`).
 - **the CLI.** `bin/lipika.rs` carries no traces: nothing exercises it in the
   test run.
+
+## Third pass: window render, absolute time, burst gate
+
+The `dgsn-emulation` work added four requirements (36 → 40) in the way the
+section below prescribes, and nothing else about the chain changed:
+
+| requirement | satisfied by | verified by |
+|-------------|--------------|-------------|
+| `fn-8` burst gate, `eq-e11` | `signal::gate::{BurstGate::is_on, Gated::evaluate_baseband_batch}`, `pipeline::build_signal` (wraps a gated transmitter) | `signal::gate` unit tests (interval edges, periodicity, absolute anchoring, wrap of an inner signal); `tests/window_render.rs` (received on/off at the light-delayed sample edges, the example sky's three bursts) |
+| `fn-9` absolute-time emission | `signal::{elapsed_periods, FrameAnchor::at}`, the `repeating` constructors of the three framed signals, `cw::ContinuousWave::anchor_phase`, `pipeline::build_signal` | `signal` unit tests (exact split, periodic extension, same value at the same instant from two render epochs for every kind); `tests/window_render.rs` (two overlapping windows agree, LEO and stationary) |
+| `fn-10` window render | `pipeline::render_window` | `tests/window_render.rs` (equals the equivalent scene render, chunk/thread invariance, early stop, empty sky is noise only) |
+
+`render_window` also carries `nf-2`/`nf-3` and its tests `fn-7`/`nf-3`/`fid-4`,
+since those requirements apply to it. `examples/window_throughput.rs` (the
+window-render timing) is an example binary, outside the annotation paths in
+`mantra.json5`, and carries no trace: `nf-1` remains about the Criterion bench.
 
 ## Adding a requirement
 
