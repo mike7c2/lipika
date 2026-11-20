@@ -14,6 +14,9 @@
 //!   prototyped and abandoned; see `backend::mod` for the precision analysis.
 //! - [`config`] — TOML scene description (serde structs).
 //! - [`output`] — IQ file writers (raw little-endian `complex64` + JSON sidecar).
+//! - [`pipeline`] — scene orchestration, and [`pipeline::render_window`]: one
+//!   receiver band over one absolute-time window of a transmitter-only sky,
+//!   streamed to a caller's sink (the entry point for emulating an SDR).
 //!
 //! ## Architectural principle: time-domain resampling for Doppler
 //!

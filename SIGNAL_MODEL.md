@@ -7,7 +7,7 @@ oscillator, the antenna and the front-end are *operators* on it; sampling +
 quantisation is the single discrete, lossy step. Because every operator is exact
 and stateless-in-form, an *estimator* can run the same algebra **backwards** (§6).
 
-The numbered equations **(E1)–(E10)** each cite the code that implements them; §9
+The numbered equations **(E1)–(E11)** each cite the code that implements them; §9
 collects the equation ↔ code map. Symbols are in the glossary (§8). What the model
 deliberately leaves out is in **§7 (notable exclusions)** — read it before trusting
 a result that depends on an unmodelled effect.
@@ -34,6 +34,55 @@ $$ s_{\text{RF}}(t) \;=\; \Re\!\Big[\, s(t)\, e^{\,j 2\pi f_{tx} t}\,\Big], \qqu
 The crucial property: **`s` is never pre-sampled.** Doppler, delay and clock all
 act by changing *where* `s` is evaluated, not by resampling a buffer — which is
 what keeps the model exact.
+
+### 1.1 Absolute time
+
+By default a framed signal (BPSK, OOK, 16-QAM) is a single frame that starts at
+the scene epoch, and `s(t)=0` before it and after its last symbol. That is fine
+for one scene, but it ties the emission to when the scene happens to start. A
+transmitter can instead be **anchored to an absolute epoch** `t_0`
+(`signal_epoch_unix`), and is then defined for all time and independent of any
+render's start:
+
+| signal | anchored `s(t)` |
+|---|---|
+| CW tone | $s(t)=e^{\,j2\pi f_b (t-t_0)}$ |
+| BPSK / OOK (frame of `N` bits) | $s(t)=b_{\lfloor R\,(t-t_0)\rfloor \bmod N}$ |
+| 16-QAM (frame of `N` symbols) | $s(t)=a_{\lfloor R_s (t-t_0)\rfloor \bmod N}$ |
+| GPS C/A, no NAV | $s(t)=c_{\text{PRN}}(t-t_0)$, 1 ms periodic (already so) |
+
+The frame is the same sync word + seeded payload as before; it simply repeats end
+to end, in both directions from `t_0`. A **window render**
+(`pipeline::render_window`, used to emulate one receiver recording one stretch of
+absolute time) anchors every transmitter, taking `t_0 = 0` (Unix time 0) where
+none is given, so two windows covering the same instant see the same emission.
+
+> **code** — `t − t_0` is never formed per sample at Unix magnitude (that would
+> quantise to ~238 ns, fid-2). `signal::FrameAnchor::at` splits
+> `R·(t_render − t_0)` once, exactly, into a whole symbol count (kept
+> `mod N` as an integer offset) and a fraction (kept as a sub-symbol time tag);
+> `signal::frame_index` then works in render-relative time. For CW the fraction
+> of `f_b·(t_render − t_0)` becomes a phase offset
+> (`cw::ContinuousWave::anchor_phase`).
+
+### 1.2 Burst gate
+
+Any transmitter may be keyed by a periodic **burst gate** (`gate`): a period `T`,
+an absolute epoch `t_g` at which a period starts, and on-intervals
+`[o_k, o_k + d_k)` inside the period. The emitted signal is
+
+$$ \boxed{\; s_g(t) \;=\; g(t)\,s(t), \qquad g(t)=\begin{cases}1 & (t-t_g) \bmod T \;\in\; \bigcup_k\,[\,o_k,\;o_k+d_k) \\ 0 & \text{otherwise}\end{cases}\;} \tag{E11} $$
+
+> **code** — `signal::gate::BurstGate::is_on` is `g`; `signal::gate::Gated` wraps
+> any `SignalModel` and is itself one.
+
+`g` is a function of **emission** time, exactly like `s`: it is evaluated at the
+`τ` of (E1), so a receiver sees each burst edge delayed by the light time and
+stretched by Doppler, with no separate "apply the envelope" step at the receiver.
+The gate multiplies whatever `s` is; it does not restart the frame. To have every
+burst open on the sync word, make the frame period `N/R` divide the burst spacing
+and anchor both at the same epoch (as `examples/hiber_beacon_sky.toml` does). The
+edges are ideal (zero rise time): no ramp or key-click shaping is modelled.
 
 ---
 
@@ -320,6 +369,8 @@ operator on `s(τ)` or another term in `δ`.
 | `t_utc` | true (coordinate) reception time `= t − δ_o`; geometry is solved here |
 | `τ` | emission time (light-time solve at `t_utc`, §2.1) |
 | `s(t)` | transmitter complex baseband (§1) |
+| `t_0` | absolute epoch a transmitter's emission is anchored to (§1.1) |
+| `g(t)`, `T`, `t_g`, `o_k`, `d_k` | burst gate; its period, epoch, on-interval offsets and durations (§1.2) |
 | `f_tx`, `f_lo` | source RF carrier; receiver band LO |
 | `f_s`, `B` | band sample rate (= noise bandwidth) |
 | `P_s, P_o` | source / observer ECEF position |
@@ -345,7 +396,7 @@ Each formula and the function that implements it. Source files are under
 
 The map is machine-checked: each function below carries a
 `#[mantra_macros::req_satisfied("eq-eN")]` trace, `docs/REQUIREMENTS.md` defines
-`eq-e1`–`eq-e10`, and `scripts/trace.sh` (mantra) reports whether a passing test
+`eq-e1`–`eq-e11`, and `scripts/trace.sh` (mantra) reports whether a passing test
 executed each one — see `docs/TRACEABILITY.md`.
 
 | eq | what | code |
@@ -360,6 +411,7 @@ executed each one — see `docs/TRACEABILITY.md`.
 | **E8** | IP3 nonlinearity | `rx::PostOp::Nonlinearity` |
 | **E9** | ADC collapse (clip + quantise) | `rx::PostOp::Adc` |
 | **E10** | full forward `x[n]` | `pipeline::generate_band` (Σ + noise + `RxChain::apply_post_sum`) |
+| **E11** | burst gate `g(t)·s(t)` | `signal::gate::{BurstGate::is_on, Gated}` |
 
 The reverse links live in the code: each listed function's doc-comment names its
 equation, so `grep -rn "SIGNAL_MODEL" src/` walks from code back to the maths.

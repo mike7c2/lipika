@@ -18,6 +18,9 @@ pub struct OokFrame {
     /// [`super::bpsk::BpskFrame::epoch_rel_s`]).
     pub epoch_rel_s: f64,
     pub carrier_hz: f64,
+    /// One-shot (`None`) or periodic (`Some(k)`); see
+    /// [`super::bpsk::BpskFrame::repeat_from`].
+    pub repeat_from: Option<i64>,
 }
 
 impl OokFrame {
@@ -37,7 +40,16 @@ impl OokFrame {
         for _ in 0..n_payload_bits {
             bits.push(rng.gen_bool(0.5) as u8);
         }
-        Ok(Self { bits, bit_rate_bps, epoch_rel_s, carrier_hz })
+        Ok(Self { bits, bit_rate_bps, epoch_rel_s, carrier_hz, repeat_from: None })
+    }
+
+    /// Periodic extension anchored at `anchor`; see
+    /// [`super::bpsk::BpskFrame::repeating`].
+    #[mantra_macros::req_satisfied("fn-9")]
+    pub fn repeating(mut self, anchor: super::FrameAnchor) -> Self {
+        self.epoch_rel_s = anchor.epoch_rel_s;
+        self.repeat_from = Some(anchor.symbol_offset);
+        self
     }
 }
 
@@ -53,11 +65,10 @@ impl SignalModel for OokFrame {
         for (i, &t) in t_emit.iter().enumerate() {
             let bit_idx_f = (t - self.epoch_rel_s) * self.bit_rate_bps;
             let bit_idx = bit_idx_f.floor() as i64;
-            if bit_idx < 0 || bit_idx >= n_bits {
-                out[i] = Complex32::new(0.0, 0.0);
-            } else {
-                out[i] = Complex32::new(self.bits[bit_idx as usize] as f32, 0.0);
-            }
+            out[i] = match super::frame_index(bit_idx, n_bits, self.repeat_from) {
+                None => Complex32::new(0.0, 0.0),
+                Some(k) => Complex32::new(self.bits[k] as f32, 0.0),
+            };
         }
         out
     }

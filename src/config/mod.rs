@@ -89,8 +89,100 @@ pub struct TransmitterConfig {
     #[serde(default)]
     pub bandwidth_hz: Option<f64>,
     pub trajectory: TrajectoryConfig,
+    /// Absolute epoch (Unix seconds) the emission is anchored to. When set,
+    /// what the transmitter emits is a function of absolute time only and is
+    /// defined for all time: a `bpsk`/`ook`/`qam16` frame starts at this
+    /// instant and **repeats** end to end (before and after it), and a `cw`
+    /// tone has zero phase at this instant. When omitted, a scene render keeps
+    /// the original behaviour (frame emitted once, starting at the scene
+    /// epoch), while a window render ([`crate::pipeline::render_window`])
+    /// anchors at Unix time 0. `ca_code` carries its own `epoch_unix` and
+    /// ignores this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal_epoch_unix: Option<f64>,
+    /// Optional burst gate (any signal kind): the transmitter is keyed on only
+    /// inside the listed intervals of a repeating period. See [`GateConfig`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<GateConfig>,
     #[serde(flatten)]
     pub kind: SignalKind,
+}
+
+/// Burst gate on a transmitter (`SIGNAL_MODEL.md` E11): a period and the
+/// on-intervals within it, anchored to absolute time. The emission is zero
+/// outside the on-intervals.
+///
+/// ```toml
+/// gate = { period_s = 15.0, bursts = [
+///     { offset_s = 0.0, duration_s = 0.5 },
+///     { offset_s = 1.5, duration_s = 0.5 },
+/// ] }
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GateConfig {
+    /// Length of the repeating pattern (seconds).
+    pub period_s: f64,
+    /// Absolute time (Unix seconds) at which a period starts; periods tile all
+    /// time before and after it. Default 0, i.e. periods start at Unix times
+    /// that are whole multiples of `period_s`.
+    #[serde(default)]
+    pub epoch_unix: f64,
+    /// On-intervals within one period. Each must satisfy `0 <= offset_s` and
+    /// `offset_s + duration_s <= period_s`.
+    pub bursts: Vec<BurstConfig>,
+}
+
+/// One on-interval of a [`GateConfig`]: on for `duration_s` starting
+/// `offset_s` after the period start (start inclusive, end exclusive).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BurstConfig {
+    pub offset_s: f64,
+    pub duration_s: f64,
+}
+
+/// A **sky**: the transmitters that exist, and nothing else. No receivers, no
+/// epoch, no duration: those are supplied per call to
+/// [`crate::pipeline::render_window`]. A sky file is a TOML document holding
+/// only `[[transmitter]]` entries (the same entries a scene uses); an empty
+/// file is a valid, empty sky.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkyConfig {
+    #[serde(default, rename = "transmitter")]
+    pub transmitters: Vec<TransmitterConfig>,
+    /// GPS−UTC offset in seconds (see [`SceneMeta::gps_utc_offset_s`]).
+    #[serde(default = "default_gps_utc_offset")]
+    pub gps_utc_offset_s: f64,
+}
+
+impl Default for SkyConfig {
+    fn default() -> Self { Self::empty() }
+}
+
+impl SkyConfig {
+    /// A sky with no transmitters: a receiver looking at it records its own
+    /// noise only.
+    pub fn empty() -> Self {
+        Self { transmitters: Vec::new(), gps_utc_offset_s: default_gps_utc_offset() }
+    }
+
+    /// A sky holding the given transmitters.
+    pub fn new(transmitters: Vec<TransmitterConfig>) -> Self {
+        Self { transmitters, ..Self::empty() }
+    }
+
+    pub fn from_toml_str(text: &str) -> Result<Self, anyhow::Error> {
+        Ok(toml::from_str(text)?)
+    }
+
+    pub fn from_toml_file(path: &std::path::Path) -> Result<Self, anyhow::Error> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("reading sky '{}': {e}", path.display()))?;
+        Self::from_toml_str(&text)
+            .map_err(|e| anyhow::anyhow!("parsing sky '{}': {e}", path.display()))
+    }
 }
 
 impl TransmitterConfig {
@@ -267,7 +359,62 @@ pub struct AdcConfig {
     pub full_scale_v: f64,
 }
 
+impl ReceiverConfig {
+    /// A receiver fixed at a WGS84 geodetic position, with an ideal clock and
+    /// no bands yet. Add a clock with [`Self::with_clock`]; pass the band to
+    /// [`crate::pipeline::render_window`] (or push it onto `bands` for a scene).
+    pub fn stationary_geodetic(name: impl Into<String>, lat_deg: f64, lon_deg: f64, h_m: f64) -> Self {
+        Self {
+            name: name.into(),
+            trajectory: TrajectoryConfig::StationaryGeodetic { lat_deg, lon_deg, h_m },
+            clock: NodeClockSpec::default(),
+            bands: Vec::new(),
+        }
+    }
+
+    /// Replace the receiver's clock model.
+    pub fn with_clock(mut self, clock: NodeClockSpec) -> Self {
+        self.clock = clock;
+        self
+    }
+}
+
 impl ReceiverBandConfig {
+    /// A band tuned to `lo_carrier_hz` sampling at `sample_rate_hz`, with the
+    /// default 290 K thermal floor, acceptance bandwidth = sample rate and an
+    /// ideal front-end.
+    pub fn new(band_id: impl Into<String>, lo_carrier_hz: f64, sample_rate_hz: f64) -> Self {
+        Self {
+            band_id: band_id.into(),
+            lo_carrier_hz,
+            sample_rate_hz,
+            noise_temperature_k: default_noise_temp_k(),
+            noise_power_w: None,
+            bandwidth_hz: None,
+            frontend: None,
+        }
+    }
+
+    /// Set the system noise temperature (kelvin).
+    pub fn with_noise_temperature_k(mut self, noise_temperature_k: f64) -> Self {
+        self.noise_temperature_k = noise_temperature_k;
+        self
+    }
+
+    /// Pin the noise floor to an explicit power (watts), overriding the
+    /// temperature. `0.0` disables noise.
+    pub fn with_noise_power_w(mut self, noise_power_w: f64) -> Self {
+        self.noise_power_w = Some(noise_power_w);
+        self
+    }
+
+    /// Attach a receiver front-end (antenna pattern / horizon cutoff, gain,
+    /// nonlinearity, ADC).
+    pub fn with_frontend(mut self, frontend: FrontendConfig) -> Self {
+        self.frontend = Some(frontend);
+        self
+    }
+
     /// Resolved acceptance bandwidth: explicit `bandwidth_hz` if set, else
     /// the sample rate (Nyquist span of the digitised band).
     pub fn effective_bandwidth_hz(&self) -> f64 {
