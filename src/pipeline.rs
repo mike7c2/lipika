@@ -29,8 +29,8 @@ use rand_xoshiro::Xoshiro256PlusPlus;
 use rayon::prelude::*;
 
 use crate::channel::{
-    add_awgn_at_power, solve_emission_times, thermal_noise_power_w,
-    transmitter_contribution_at_receiver,
+    accumulate_reporting_occlusion, add_awgn_at_power, horizon, solve_emission_times,
+    thermal_noise_power_w,
 };
 use crate::SPEED_OF_LIGHT_M_S;
 use crate::profile;
@@ -422,6 +422,8 @@ struct BandMeta {
     stopped_early: bool,
     /// Names of the transmitters that passed the band-overlap gate.
     contributing: Vec<String>,
+    /// Of those, the ones not occluded for at least one generated sample.
+    visible: Vec<String>,
     descriptor: serde_json::Value,
 }
 
@@ -439,6 +441,27 @@ pub struct OutputManifest {
 /// callers that want the samples in RAM; for large scenes prefer
 /// [`run_scene_to_dir`], which streams to disk with bounded memory.
 pub fn run_scene(scene: &SceneConfig, rng_seed_base: u64) -> Result<Vec<ObserverOutput>> {
+    run_scene_in_memory(scene, rng_seed_base, true)
+}
+
+/// [`run_scene`] with the [horizon gate](crate::channel::horizon) turned off:
+/// every in-band transmitter goes through the per-sample path for every
+/// sample, whether or not it is below the antenna cutoff. The samples are
+/// bit-identical to [`run_scene`]'s; only the cost differs. This is the
+/// reference the gate is tested and timed against, not something a caller
+/// otherwise needs.
+pub fn run_scene_without_horizon_gate(
+    scene: &SceneConfig,
+    rng_seed_base: u64,
+) -> Result<Vec<ObserverOutput>> {
+    run_scene_in_memory(scene, rng_seed_base, false)
+}
+
+fn run_scene_in_memory(
+    scene: &SceneConfig,
+    rng_seed_base: u64,
+    horizon_gate: bool,
+) -> Result<Vec<ObserverOutput>> {
     let (transmitters, receivers, work) = prepare_scene(scene)?;
     let mut outputs = Vec::with_capacity(work.len());
     for (work_idx, (r_idx, b_idx)) in work.into_iter().enumerate() {
@@ -447,7 +470,7 @@ pub fn run_scene(scene: &SceneConfig, rng_seed_base: u64) -> Result<Vec<Observer
         let mut sink = MemSink::with_capacity(n);
         let meta = generate_band(
             receiver, r_idx, b_idx, &transmitters, scene,
-            rng_seed_base, work_idx, DEFAULT_CHUNK_SAMPLES, None, &mut sink,
+            rng_seed_base, work_idx, DEFAULT_CHUNK_SAMPLES, None, horizon_gate, &mut sink,
         )?;
         outputs.push(ObserverOutput {
             name: meta.name,
@@ -496,7 +519,7 @@ pub fn run_scene_to_dir(
                 let mut sink = FileSink { writer: StreamingC64Writer::create(dir, &name)? };
                 let meta = generate_band(
                     receiver, r_idx, b_idx, &transmitters, scene,
-                    rng_seed_base, work_idx, chunk_samples, None, &mut sink,
+                    rng_seed_base, work_idx, chunk_samples, None, true, &mut sink,
                 )?;
                 sink.writer.finalize(
                     meta.epoch_unix, meta.sample_rate_hz, meta.lo_carrier_hz, &meta.descriptor,
@@ -633,6 +656,16 @@ pub struct WindowSummary {
     /// others were skipped. Overlap is spectral only: a listed transmitter may
     /// still be below the horizon or gated off for the whole window.
     pub contributing_transmitters: Vec<String>,
+    /// The contributing transmitters that were **not occluded for at least
+    /// one emitted sample** (in sky order): the band's antenna gain towards
+    /// them was non-zero there, i.e. they were at or above its `cutoff_deg`
+    /// at some point of the rendered window. With no antenna, or an antenna
+    /// without a cutoff, nothing is ever occluded and this equals
+    /// `contributing_transmitters` (for a non-empty render). A listed
+    /// transmitter may still have been burst-gated off whenever it was in
+    /// view. Exact (decided per sample), so it does not depend on chunk size,
+    /// thread count or the horizon gate.
+    pub visible_transmitters: Vec<String>,
 }
 
 /// Render the IQ one receiver records on one band over one absolute-time
@@ -665,6 +698,13 @@ pub struct WindowSummary {
 /// start_unix`, the same duration and seed, this receiver with this single
 /// band, and the sky's transmitters each given an explicit
 /// `signal_epoch_unix`.
+///
+/// **Horizon gate.** If the band's antenna has a `cutoff_deg`, a transmitter
+/// that is certainly below it for a stretch of samples is skipped for that
+/// stretch instead of being evaluated to zero sample by sample (see
+/// [`crate::channel::horizon`]), so the cost follows the number of
+/// transmitters in view rather than the number in the sky. The samples are
+/// unchanged.
 #[mantra_macros::req_satisfied("fn-10", "nf-2", "nf-3")]
 pub fn render_window<F>(
     sky: &SkyConfig,
@@ -673,6 +713,44 @@ pub fn render_window<F>(
     start_unix: f64,
     duration_s: f64,
     options: &WindowOptions,
+    sink: F,
+) -> Result<WindowSummary>
+where
+    F: FnMut(&[Complex32]) -> ControlFlow<()>,
+{
+    render_window_impl(sky, receiver, band, start_unix, duration_s, options, true, sink)
+}
+
+/// [`render_window`] with the [horizon gate](crate::channel::horizon) turned
+/// off: every in-band transmitter goes through the per-sample path for every
+/// sample, whether or not it is below the antenna cutoff. The samples and the
+/// summary are identical to [`render_window`]'s; only the cost differs. This
+/// is the reference the gate is tested and timed against, not something a
+/// caller otherwise needs.
+pub fn render_window_without_horizon_gate<F>(
+    sky: &SkyConfig,
+    receiver: &ReceiverConfig,
+    band: &ReceiverBandConfig,
+    start_unix: f64,
+    duration_s: f64,
+    options: &WindowOptions,
+    sink: F,
+) -> Result<WindowSummary>
+where
+    F: FnMut(&[Complex32]) -> ControlFlow<()>,
+{
+    render_window_impl(sky, receiver, band, start_unix, duration_s, options, false, sink)
+}
+
+#[mantra_macros::req_satisfied("fn-10", "nf-2", "nf-3")]
+fn render_window_impl<F>(
+    sky: &SkyConfig,
+    receiver: &ReceiverConfig,
+    band: &ReceiverBandConfig,
+    start_unix: f64,
+    duration_s: f64,
+    options: &WindowOptions,
+    horizon_gate: bool,
     sink: F,
 ) -> Result<WindowSummary>
 where
@@ -704,13 +782,14 @@ where
     let mut sink = CallbackSink { f: sink };
     let meta = generate_band(
         &receivers[0], 0, 0, &transmitters, &scene,
-        options.seed, 0, options.chunk_samples.max(1), Some(&pool), &mut sink,
+        options.seed, 0, options.chunk_samples.max(1), Some(&pool), horizon_gate, &mut sink,
     )?;
     Ok(WindowSummary {
         n_samples_window: (band.sample_rate_hz * duration_s).round() as usize,
         n_samples_emitted: meta.n_samples,
         stopped_early: meta.stopped_early,
         contributing_transmitters: meta.contributing,
+        visible_transmitters: meta.visible,
     })
 }
 
@@ -766,6 +845,9 @@ fn generate_band(
     // Pool for the transmitter fan-out. `None` ⇒ whichever pool the caller is
     // already running in (rayon's current/global one).
     pool: Option<&rayon::ThreadPool>,
+    // Skip transmitters that are certainly below the antenna cutoff (never
+    // changes the samples; `false` is the reference path for tests/timing).
+    horizon_gate: bool,
     sink: &mut dyn IqSink,
 ) -> Result<BandMeta> {
     let band = &receiver.bands[band_idx];
@@ -811,6 +893,17 @@ fn generate_band(
     // Receiver front-end operator chain (built once; identity if unconfigured).
     let rx_chain = crate::rx::RxChain::from_config(band.frontend.as_ref());
 
+    // Horizon gate: only where occlusion is modelled (the antenna has a
+    // cutoff). Without one nothing is ever skipped.
+    let gate_cutoff_deg: Option<f64> = if horizon_gate {
+        rx_chain.antenna.as_ref().and_then(|a| a.cutoff_deg)
+    } else {
+        None
+    };
+    let gate_stretch_samples = horizon::stretch_samples(fs);
+    // Per active transmitter: not occluded for at least one sample so far.
+    let mut unoccluded = vec![false; active.len()];
+
     // Sequential chunk loop (clock walk + noise stream + file order); the
     // expensive per-transmitter work is parallelised within each chunk.
     let mut i0 = 0usize;
@@ -836,19 +929,31 @@ fn generate_band(
         let receiver_position = profile::time("receiver:position_batch",
             || receiver.trajectory.position_ecef_batch(&t_utc_rel.mapv(|x| epoch + x)));
 
+        // Receiver summary for the horizon gate, once per chunk and shared by
+        // all transmitters.
+        let gate = gate_cutoff_deg.filter(|_| !active.is_empty()).map(|cutoff_deg| {
+            let stretches = profile::time("horizon_gate:receiver", || horizon::receiver_stretches(
+                &receiver_position, &t_utc_rel, gate_stretch_samples));
+            (cutoff_deg, stretches)
+        });
+
         // Parallel over the overlapping transmitters → one contribution buffer
-        // each; reduce in fixed transmitter order (deterministic f32 sum).
+        // each (none for a transmitter the horizon gate skipped for the whole
+        // chunk); reduce in fixed transmitter order (deterministic f32 sum).
         let mut acc = profile::time("tx_contribution:total", || {
-            let fan_out = || -> Vec<Array1<Complex32>> {
+            let fan_out = || -> Vec<(Option<Array1<Complex32>>, bool)> {
                 active
                     .par_iter()
                     .map(|&i| {
                         let tx = &transmitters[i];
-                        transmitter_contribution_at_receiver(
-                            &*tx.signal, &tx.trajectory,
-                            &receiver_position, &t_local_rel, &t_utc_rel, &delta_t,
-                            lo, tx.tx_power_w, epoch, NEWTON_ITERATIONS,
-                            rx_chain.antenna.as_ref(),
+                        let kept = match &gate {
+                            Some((cutoff_deg, stretches)) => Some(horizon::kept_ranges(
+                                &tx.trajectory, stretches, epoch, *cutoff_deg)),
+                            None => None,
+                        };
+                        gated_contribution(
+                            tx, kept.as_deref(), &receiver_position, &t_local_rel, &t_utc_rel,
+                            &delta_t, lo, epoch, rx_chain.antenna.as_ref(),
                         )
                     })
                     .collect()
@@ -857,9 +962,16 @@ fn generate_band(
                 Some(p) => p.install(fan_out),
                 None => fan_out(),
             };
+            // A skipped contribution is all (+0.0, +0.0). Leaving it out of the
+            // sum is bit-exact: `acc` starts at +0.0 and x + (+0.0) = x for
+            // every x except −0.0, which a sum that starts at +0.0 can never
+            // hold (a + b = −0.0 only if both are −0.0).
             let mut acc = Array1::<Complex32>::zeros(clen);
-            for c in &contributions {
-                acc += c;
+            for (k, (c, any_unoccluded)) in contributions.iter().enumerate() {
+                if let Some(c) = c {
+                    acc += c;
+                }
+                unoccluded[k] |= *any_unoccluded;
             }
             acc
         });
@@ -899,9 +1011,71 @@ fn generate_band(
         lo_carrier_hz: lo,
         n_samples: i0,
         stopped_early,
+        visible: contributing_names.iter().zip(&unoccluded)
+            .filter(|(_, seen)| **seen).map(|(name, _)| name.clone()).collect(),
         contributing: contributing_names,
         descriptor,
     })
+}
+
+/// One transmitter's contribution to one chunk: `(samples, unoccluded)`.
+///
+/// `kept` is the horizon gate's verdict ([`horizon::kept_ranges`]): the sample
+/// ranges that must be evaluated; everywhere else the transmitter is certainly
+/// below the antenna cutoff and its contribution is exactly zero. `None` ⇒ no
+/// gate, evaluate the whole chunk. The samples are `None` when nothing was
+/// kept (an all-zero contribution the caller need not add).
+///
+/// Every sample's value depends only on that sample's own inputs, so
+/// evaluating a sub-range gives the same bits there as evaluating the whole
+/// chunk (the property chunk-size invariance, fn-7, already rests on).
+#[mantra_macros::req_satisfied("nf-5")]
+fn gated_contribution(
+    tx: &Transmitter,
+    kept: Option<&[std::ops::Range<usize>]>,
+    receiver_position: &ndarray::Array2<f64>,
+    t_local_rel: &Array1<f64>,
+    t_utc_rel: &Array1<f64>,
+    delta_t: &Array1<f64>,
+    lo: f64,
+    epoch: f64,
+    antenna: Option<&crate::rx::Antenna>,
+) -> (Option<Array1<Complex32>>, bool) {
+    let clen = t_utc_rel.len();
+    let whole = match kept {
+        None => true,
+        Some(k) => k.len() == 1 && k[0] == (0..clen),
+    };
+    if whole {
+        let mut out = Array1::<Complex32>::zeros(clen);
+        let unoccluded = accumulate_reporting_occlusion(
+            &mut out, &*tx.signal, &tx.trajectory, receiver_position, t_local_rel, t_utc_rel,
+            delta_t, lo, tx.tx_power_w, epoch, NEWTON_ITERATIONS, antenna,
+        );
+        return (Some(out), unoccluded);
+    }
+    let kept = kept.unwrap_or(&[]);
+    if kept.is_empty() {
+        return (None, false);
+    }
+    // The transmitter crosses the cutoff inside this chunk: evaluate only the
+    // kept ranges, on copies of their slices of the per-sample inputs.
+    use ndarray::s;
+    let mut out = Array1::<Complex32>::zeros(clen);
+    let mut unoccluded = false;
+    for r in kept {
+        let mut part = Array1::<Complex32>::zeros(r.len());
+        unoccluded |= accumulate_reporting_occlusion(
+            &mut part, &*tx.signal, &tx.trajectory,
+            &receiver_position.slice(s![.., r.clone()]).to_owned(),
+            &t_local_rel.slice(s![r.clone()]).to_owned(),
+            &t_utc_rel.slice(s![r.clone()]).to_owned(),
+            &delta_t.slice(s![r.clone()]).to_owned(),
+            lo, tx.tx_power_w, epoch, NEWTON_ITERATIONS, antenna,
+        );
+        out.slice_mut(s![r.clone()]).assign(&part);
+    }
+    (Some(out), unoccluded)
 }
 
 /// Per-transmitter detail captured in the output descriptor: enough to know

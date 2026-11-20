@@ -29,6 +29,12 @@ pub struct PrecomputedTrajectory {
     positions: Array2<f64>,
     /// Number of samples.
     n: usize,
+    /// Largest speed along the interpolated path: the longest grid segment
+    /// divided by the grid step (m/s). NaN if the grid is not finite.
+    max_speed_m_s: f64,
+    /// Largest distance of any grid point from the Earth's centre (m). NaN if
+    /// the grid is not finite.
+    max_radius_m: f64,
 }
 
 impl PrecomputedTrajectory {
@@ -52,13 +58,52 @@ impl PrecomputedTrajectory {
         let n = (total / grid_dt_s).ceil() as usize + 1;
         let times = Array1::from_iter((0..n).map(|i| start + i as f64 * grid_dt_s));
         let positions = inner.position_ecef_batch(&times);
+        let (max_speed_m_s, max_radius_m) = path_bounds(&positions, grid_dt_s);
         Self {
             t0_unix: start,
             dt_s: grid_dt_s,
             positions,
             n,
+            max_speed_m_s,
+            max_radius_m,
         }
     }
+
+    /// An upper bound on how fast the interpolated position moves: the
+    /// longest grid segment divided by the grid step (m/s). The interpolated
+    /// path is piecewise linear in time and constant outside the grid, so for
+    /// any two query times `|P(t₂) − P(t₁)| ≤ max_speed · |t₂ − t₁|` (to
+    /// float rounding). NaN if the grid holds a non-finite position.
+    pub fn max_speed_m_s(&self) -> f64 { self.max_speed_m_s }
+
+    /// An upper bound on `|P(t)|` for any query time: the largest distance of
+    /// a grid point from the Earth's centre (every interpolated point is a
+    /// convex combination of two grid points). NaN if the grid holds a
+    /// non-finite position.
+    pub fn max_radius_m(&self) -> f64 { self.max_radius_m }
+}
+
+/// `(max segment length / dt, max |P|)` over a `(3, N)` position grid; NaN
+/// for either if any coordinate is not finite.
+#[mantra_macros::req_satisfied("nf-5")]
+fn path_bounds(positions: &Array2<f64>, dt_s: f64) -> (f64, f64) {
+    let n = positions.ncols();
+    let (mut max_seg2, mut max_r2) = (0.0_f64, 0.0_f64);
+    let mut finite = true;
+    for k in 0..n {
+        let p = [positions[[0, k]], positions[[1, k]], positions[[2, k]]];
+        let r2 = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
+        finite &= r2.is_finite();
+        if r2 > max_r2 { max_r2 = r2; }
+        if k + 1 < n {
+            let d = [positions[[0, k + 1]] - p[0], positions[[1, k + 1]] - p[1],
+                     positions[[2, k + 1]] - p[2]];
+            let seg2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            finite &= seg2.is_finite();
+            if seg2 > max_seg2 { max_seg2 = seg2; }
+        }
+    }
+    if finite { (max_seg2.sqrt() / dt_s, max_r2.sqrt()) } else { (f64::NAN, f64::NAN) }
 }
 
 impl Trajectory for PrecomputedTrajectory {
@@ -113,6 +158,48 @@ mod tests {
     use super::*;
     use crate::geometry::kepler::CircularKeplerian;
     use approx::assert_relative_eq;
+
+    #[mantra_macros::req_test("nf-5")]
+    #[test]
+    fn path_bounds_cover_every_interpolated_query() {
+        // A 550 km LEO: orbital speed ≈ 7.6 km/s inertial, a little less in
+        // the rotating frame for a prograde orbit.
+        let orbit = CircularKeplerian {
+            semi_major_axis_m: 6_928_137.0,
+            inclination_deg: 53.0,
+            raan_deg: 10.0,
+            true_anomaly_deg_at_epoch: 0.0,
+            epoch_unix: 1_700_000_000.0,
+        };
+        let t0 = 1_700_000_000.0;
+        let pre = PrecomputedTrajectory::sample(&orbit, t0, 30.0, 0.01);
+        let (v, r) = (pre.max_speed_m_s(), pre.max_radius_m());
+        assert!(v > 6_900.0 && v < 7_700.0, "max speed {v}");
+        assert_relative_eq!(r, 6_928_137.0, max_relative = 1e-9);
+        // Lipschitz in time, including queries beyond both ends of the grid
+        // (where the position is held), and never farther out than the bound.
+        let mut prev: Option<(f64, [f64; 3])> = None;
+        for k in 0..4000 {
+            let t = t0 - 2.0 + k as f64 * 0.008_7;
+            let p = pre.position_ecef(t);
+            assert!((p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() <= r * (1.0 + 1e-12));
+            if let Some((tp, pp)) = prev {
+                let d = ((p[0] - pp[0]).powi(2) + (p[1] - pp[1]).powi(2)
+                    + (p[2] - pp[2]).powi(2)).sqrt();
+                assert!(d <= v * (t - tp) * (1.0 + 1e-9) + 1e-6, "step {d} m in {} s", t - tp);
+            }
+            prev = Some((t, p));
+        }
+        // A grid holding a non-finite position has no bound.
+        struct Broken;
+        impl Trajectory for Broken {
+            fn position_ecef(&self, t: f64) -> [f64; 3] {
+                if t > 5.0 { [f64::NAN, 0.0, 0.0] } else { [7.0e6, 0.0, 0.0] }
+            }
+        }
+        let bad = PrecomputedTrajectory::sample(&Broken, 0.0, 10.0, 0.5);
+        assert!(bad.max_speed_m_s().is_nan() && bad.max_radius_m().is_nan());
+    }
 
     #[mantra_macros::req_test("fid-3")]
     #[test]
