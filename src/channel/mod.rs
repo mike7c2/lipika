@@ -15,6 +15,13 @@ use crate::profile;
 use crate::signal::SignalModel;
 use crate::SPEED_OF_LIGHT_M_S;
 
+pub mod horizon;
+
+/// Initial guess of the emission-time solve: the signal left this long before
+/// it arrived (median LEO/GPS one-way delay). The horizon gate's light-time
+/// bound refers to it.
+pub(crate) const EMISSION_INITIAL_LAG_S: f64 = 0.07;
+
 /// Earth rotation rate (rad/s), shared with the trajectory and GPS NAV code so
 /// the Sagnac-corrected geometry is self-consistent across the stack.
 const EARTH_ROTATION_RATE_RAD_S: f64 = 7.292_115_146_7e-5;
@@ -65,7 +72,7 @@ pub fn solve_emission_times_for<T: Trajectory + ?Sized>(
         let ox = observer_position_utc[[0, i]];
         let oy = observer_position_utc[[1, i]];
         let oz = observer_position_utc[[2, i]];
-        let mut t = tu - 0.07;
+        let mut t = tu - EMISSION_INITIAL_LAG_S;
         let mut r = 0.0;
         for _ in 0..iterations {
             // Absolute time only for the orbit query (epoch-tolerant).
@@ -142,6 +149,32 @@ pub fn accumulate_transmitter_contribution(
     newton_iters: usize,
     antenna: Option<&crate::rx::Antenna>,
 ) {
+    accumulate_reporting_occlusion(
+        accumulator, signal, transmitter_traj, receiver_position_utc, t_local_rel, t_utc_rel,
+        delta_t_receiver, receiver_lo_carrier_hz, tx_power_w, epoch, newton_iters, antenna,
+    );
+}
+
+/// [`accumulate_transmitter_contribution`], also reporting whether the
+/// transmitter was **unoccluded for at least one sample**: its antenna gain
+/// was non-zero there (always, with no antenna, if there is any sample). An
+/// occluded sample (below the antenna's `cutoff_deg`) leaves the accumulator
+/// untouched.
+#[mantra_macros::req_satisfied("fid-2", "eq-e3", "eq-e4")]
+pub(crate) fn accumulate_reporting_occlusion(
+    accumulator: &mut Array1<Complex32>,
+    signal: &dyn SignalModel,
+    transmitter_traj: &AnyTrajectory,
+    receiver_position_utc: &Array2<f64>,
+    t_local_rel: &Array1<f64>,
+    t_utc_rel: &Array1<f64>,
+    delta_t_receiver: &Array1<f64>,
+    receiver_lo_carrier_hz: f64,
+    tx_power_w: f64,
+    epoch: f64,
+    newton_iters: usize,
+    antenna: Option<&crate::rx::Antenna>,
+) -> bool {
     let n = t_utc_rel.len();
     let (t_emit, ranges) = profile::time("tx_contribution:newton",
         || solve_emission_times(transmitter_traj, receiver_position_utc, t_utc_rel, epoch, newton_iters));
@@ -168,6 +201,10 @@ pub fn accumulate_transmitter_contribution(
             a.amplitude_at(sin_el.clamp(-1.0, 1.0).asin().to_degrees())
         }).collect()
     });
+    let unoccluded = match &geom_gain {
+        Some(g) => g.iter().any(|&g| g != 0.0),
+        None => n > 0,
+    };
     let src_carrier = signal.carrier_hz();
     let wavelength_m = SPEED_OF_LIGHT_M_S / src_carrier;
     let tx_amplitude_v = tx_power_w.sqrt();
@@ -229,7 +266,8 @@ pub fn accumulate_transmitter_contribution(
             acc[i].im + amplitude * (b.re * (sp as f32) + b.im * (cp as f32)),
         );
     }
-    })  // end of "tx_contribution:mix" profile scope
+    });  // end of "tx_contribution:mix" profile scope
+    unoccluded
 }
 
 /// Allocating wrapper: produces a fresh `n`-long contribution buffer.

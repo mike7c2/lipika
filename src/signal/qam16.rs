@@ -42,6 +42,9 @@ pub struct Qam16Frame {
     /// [`super::bpsk::BpskFrame::epoch_rel_s`]).
     pub epoch_rel_s: f64,
     pub carrier_hz: f64,
+    /// One-shot (`None`) or periodic (`Some(k)`); see
+    /// [`super::bpsk::BpskFrame::repeat_from`].
+    pub repeat_from: Option<i64>,
 }
 
 impl Qam16Frame {
@@ -73,7 +76,16 @@ impl Qam16Frame {
             let v: u8 = rng.gen_range(0..16);
             symbols.push(map_symbol([(v >> 3) & 1, (v >> 2) & 1, (v >> 1) & 1, v & 1]));
         }
-        Ok(Self { symbols, symbol_rate_baud, epoch_rel_s, carrier_hz })
+        Ok(Self { symbols, symbol_rate_baud, epoch_rel_s, carrier_hz, repeat_from: None })
+    }
+
+    /// Periodic extension anchored at `anchor`; see
+    /// [`super::bpsk::BpskFrame::repeating`].
+    #[mantra_macros::req_satisfied("fn-9")]
+    pub fn repeating(mut self, anchor: super::FrameAnchor) -> Self {
+        self.epoch_rel_s = anchor.epoch_rel_s;
+        self.repeat_from = Some(anchor.symbol_offset);
+        self
     }
 }
 
@@ -88,11 +100,10 @@ impl SignalModel for Qam16Frame {
         for (i, &t) in t_emit.iter().enumerate() {
             let sym_idx_f = (t - self.epoch_rel_s) * self.symbol_rate_baud;
             let sym_idx = sym_idx_f.floor() as i64;
-            if sym_idx < 0 || sym_idx >= n_symbols {
-                out[i] = Complex32::new(0.0, 0.0);
-            } else {
-                out[i] = self.symbols[sym_idx as usize];
-            }
+            out[i] = match super::frame_index(sym_idx, n_symbols, self.repeat_from) {
+                None => Complex32::new(0.0, 0.0),
+                Some(k) => self.symbols[k],
+            };
         }
         out
     }

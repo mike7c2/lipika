@@ -17,6 +17,11 @@ pub struct BpskFrame {
     /// bit index precise instead of quantising to the ~238 ns f64 ULP).
     pub epoch_rel_s: f64,
     pub carrier_hz: f64,
+    /// `None`: the frame is emitted once, starting at `epoch_rel_s`, and the
+    /// source is silent before and after. `Some(k)`: the frame repeats for all
+    /// time and the bit starting at `epoch_rel_s` is frame bit `k` (see
+    /// [`super::FrameAnchor`]).
+    pub repeat_from: Option<i64>,
 }
 
 impl BpskFrame {
@@ -33,7 +38,16 @@ impl BpskFrame {
         for _ in 0..n_payload_bits {
             bits.push(if rng.gen_bool(0.5) { 1 } else { -1 });
         }
-        Self { bits, bit_rate_bps, epoch_rel_s, carrier_hz }
+        Self { bits, bit_rate_bps, epoch_rel_s, carrier_hz, repeat_from: None }
+    }
+
+    /// Turn the one-shot frame into its periodic extension anchored at `anchor`
+    /// (absolute-time emission: defined for all time).
+    #[mantra_macros::req_satisfied("fn-9")]
+    pub fn repeating(mut self, anchor: super::FrameAnchor) -> Self {
+        self.epoch_rel_s = anchor.epoch_rel_s;
+        self.repeat_from = Some(anchor.symbol_offset);
+        self
     }
 }
 
@@ -48,11 +62,10 @@ impl SignalModel for BpskFrame {
         for (i, &t) in t_emit.iter().enumerate() {
             let bit_idx_f = (t - self.epoch_rel_s) * self.bit_rate_bps;
             let bit_idx = bit_idx_f.floor() as i64;
-            if bit_idx < 0 || bit_idx >= n_bits {
-                out[i] = Complex32::new(0.0, 0.0);
-            } else {
-                out[i] = Complex32::new(self.bits[bit_idx as usize] as f32, 0.0);
-            }
+            out[i] = match super::frame_index(bit_idx, n_bits, self.repeat_from) {
+                None => Complex32::new(0.0, 0.0),
+                Some(k) => Complex32::new(self.bits[k] as f32, 0.0),
+            };
         }
         out
     }

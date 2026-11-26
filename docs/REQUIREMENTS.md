@@ -130,6 +130,18 @@ Each receiver band MUST be written as raw little-endian `complex64` (interleaved
 
 For a given scene and seed the output MUST be bit-for-bit reproducible, and identical regardless of chunk size and thread count. Parallel transmitter contributions MUST be reduced in a fixed order and all randomness MUST derive from the seed.
 
+### `fn-8`: Burst gate
+
+A transmitter of any signal kind MAY carry a `gate`: a period and a list of on-intervals (offset, duration) within the period. The gate MUST be a stateless function of emission time, anchored to an absolute epoch (`gate.epoch_unix`, default Unix time 0) and periodic for all time, and the emitted signal MUST be exactly zero outside the on-intervals and the ungated signal inside them (interval start inclusive, end exclusive). An interval that does not fit inside one period MUST be rejected as a configuration error.
+
+### `fn-9`: Absolute-time emission
+
+A transmitter whose emission is anchored to an absolute epoch (`signal_epoch_unix`; in a window render every transmitter is, with Unix time 0 as the default) MUST emit a function of absolute time only, defined for all time: a `bpsk`, `ook` or `qam16` frame starts at the epoch and repeats end to end before and after it, a `cw` tone has zero phase at the epoch, and a pure `ca_code` is periodic from its own `epoch_unix`. Two renders that cover the same absolute instant MUST therefore see the same emitted signal whatever their start times. The anchor MUST be reduced to an integer symbol offset plus a sub-symbol time tag so that per-sample arithmetic stays epoch-relative (fid-2). A scene transmitter without `signal_epoch_unix` MUST keep the original behaviour (frame emitted once, starting at the scene epoch).
+
+### `fn-10`: Window render
+
+The library MUST offer a call that renders one receiver band over one absolute-time window (`start_unix`, `duration_s`) of a sky (a transmitter-only description; an empty sky is valid and yields the receiver's noise only), delivering the samples to a caller-supplied sink in order, chunk by chunk as they are generated, and stopping when the sink asks. For the same receiver, band, time and seed the samples MUST equal those of the equivalent scene render, and fn-7 (determinism, chunk-size and thread-count invariance) and nf-2 (bounded memory) apply to it.
+
 ## Non-functional requirements
 
 ### `nf-1`: Throughput
@@ -151,6 +163,10 @@ The number of worker threads for the per-chunk transmitter fan-out MUST be confi
 - **Manual:** true
 
 Output MUST load in NumPy, GNU Radio and GNSS-SDR with no bespoke reader, which the headerless interleaved-f32 format of fn-6 provides. End-to-end evidence is the GNSS-SDR validation in the README (acquisition, tracking and position fix); it is a manual check, not an automated test.
+
+### `nf-5`: Horizon gate
+
+Where a band's antenna has a cutoff elevation (occlusion is modelled), the renderer MUST NOT do per-sample work for a transmitter over a stretch of samples during which it is certainly below that cutoff, so that render cost follows the number of transmitters in view rather than the number in the sky. The gate MUST NOT change any output sample: it MAY skip a stretch only when a bound on the arrival elevation the per-sample path would compute (eq-e3, eq-e6), taken over every sample of the stretch, is below the cutoff, and MUST fall through to the per-sample path whenever it cannot bound it (a transmitter near the cutoff, a trajectory without a speed bound, any non-finite input). With no cutoff nothing may be skipped. fn-7 (determinism, chunk-size and thread-count invariance) applies with the gate on.
 
 ## Signal-model equations
 
@@ -197,3 +213,7 @@ The ADC MUST clip to `±V_fs` and quantise symmetrically mid-tread, `x[n] = Q_b(
 ### `eq-e10`: Full forward model (E10, §5)
 
 A band's samples MUST be `x[n] = Q_b(clip[ N(g·Σ_i A_i·s_i(τ_i)·e^{jφ_i}) + n[n] ])` at `t_n = n / f_s`: superposition, then thermal noise, then the configured post-sum operator chain in order (gain, nonlinearity, ADC), each an identity when unconfigured.
+
+### `eq-e11`: Burst gate (E11, §1.2)
+
+A gated transmitter MUST emit `s_g(t) = g(t)·s(t)` with `g(t) = 1` when `(t − t_g) mod T` lies in one of the on-intervals `[o_k, o_k + d_k)` and `0` otherwise, evaluated at the emission time like `s` itself.

@@ -1,0 +1,47 @@
+# A sky: transmitters only (no [scene], no [[receiver]]). The receiver, band
+# and time window are supplied by the caller of
+# `lipika::pipeline::render_window`; see README "Emulating one SDR".
+#
+# One Hiber-style UHF beacon on a LEO: BPSK at 4800 symbols per second on
+# 401.15 MHz, keyed on for three bursts every 15 seconds.
+#
+# ASSUMED, not from the source record: the record only says "three bursts
+# every 15 seconds". The burst length (0.5 s) and the spacing (bursts starting
+# 1.5 s apart, i.e. 1.0 s of silence between them, at the start of each 15 s
+# period) are plausible placeholders. Change `gate.bursts` when the real
+# numbers are known.
+#
+# Everything is tied to absolute time: gate periods start at Unix times that
+# are whole multiples of 15 s, and the 7200-bit (1.5 s) frame repeats from
+# Unix time 0, so every burst opens on the sync word and carries the first
+# 2400 bits of the frame. Two receivers recording the same instant see the
+# same emission.
+#
+# Link budget for a 290 K receiver sampling at 48 kHz (noise floor k·T·B =
+# −157.2 dBW) with an isotropic antenna: 1 W EIRP gives an in-band SNR of
+# about +16 dB at 680 km slant range (a 35° pass at culmination), +13 dB at
+# 1000 km and +6 dB at 2000 km (near the horizon).
+#
+# The orbit is the synthetic ISS-like TLE of iss_uhf_pass.toml, reused so the
+# examples share one LEO. It culminates at 35° elevation over Glasgow
+# (55.86 N, 4.25 W) at Unix 1717260990; a 600 s window starting at
+# 1717260690 covers that pass. Without a receiver antenna `cutoff_deg` the
+# satellite is also heard through the Earth; set one (0.0 = the horizon) on
+# the band's front-end to model occlusion.
+
+[[transmitter]]
+name = "hiber_beacon"
+carrier_hz = 401_150_000.0
+tx_power_dbw = 0.0   # 1 W EIRP
+kind = "bpsk"
+bit_rate_bps = 4800.0
+payload_bits = 7168          # 4800 bps × 1.5 s − 32 sync bits
+payload_seed = 2021_01
+sync_word = [-1, 1, 1, -1, 1, -1, -1, 1, 1, 1, 1, -1, -1, 1, -1, 1, -1, 1, -1, -1, 1, 1, -1, -1, 1, -1, 1, 1, -1, -1, -1, 1]
+signal_epoch_unix = 0.0      # frame bit 0 at Unix 0, repeating every 1.5 s
+gate = { period_s = 15.0, epoch_unix = 0.0, bursts = [
+    { offset_s = 0.0, duration_s = 0.5 },   # ASSUMED length and spacing
+    { offset_s = 1.5, duration_s = 0.5 },
+    { offset_s = 3.0, duration_s = 0.5 },
+] }
+trajectory = { kind = "tle", line1 = "1 25544U 98067A   24001.50000000  .00010000  00000+0  18000-3 0  9994", line2 = "2 25544  51.6400 100.0000 0001000  90.0000 270.0000 15.50000000000009" }
